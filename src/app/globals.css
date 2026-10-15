@@ -1,0 +1,129 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    /* Paper & Surface Tones (Editorial & Academic Desk) */
+    --surface-paper: #FBF9F5;
+    --surface-subtle: #F5F2EB;
+    --surface-muted: #EFECE4;
+    --surface-card: #FFFFFF;
+    --surface-overlay: rgba(251, 249, 245, 0.95);
+
+    /* Typography & Ink Tones */
+    --ink-primary: #18181B;
+    --ink-secondary: #3F3F46;
+    --ink-muted: #71717A;
+    --ink-faint: #A1A1AA;
+
+    /* Academic Botanical Accents (Sage & Forest) */
+    --accent-sage: #3E5948;
+    --accent-sage-dark: #2C4234;
+    --accent-sage-light: #EBF0EC;
+    --accent-sage-border: #A3B8A8;
+
+    /* Citation & Evidence Amber */
+    --accent-amber: #B45309;
+    --accent-amber-light: #FEF3C7;
+    --accent-amber-border: #FCD34D;
+
+    /* Delicate Paper Dividers */
+    --border-paper: #E5E0D8;
+    --border-paper-strong: #D4CDC3;
+
+    /* Shadows: Optical & Subtle (No generic fuzzy purple glow) */
+    --shadow-paper: 0 1px 3px rgba(24, 24, 27, 0.05), 0 1px 2px rgba(24, 24, 27, 0.03);
+    --shadow-lift: 0 4px 12px -2px rgba(24, 24, 27, 0.08), 0 2px 6px -1px rgba(24, 24, 27, 0.04);
+  }
+
+  /* Dark mode: Deep Obsidian Slate with warm amber & muted olive */
+  .dark {
+    --surface-paper: #121316;
+    --surface-subtle: #18191E;
+    --surface-muted: #212228;
+    --surface-card: #1A1B21;
+    --surface-overlay: rgba(18, 19, 22, 0.95);
+
+    --ink-primary: #F4F4F5;
+    --ink-secondary: #D4D4D8;
+    --ink-muted: #A1A1AA;
+    --ink-faint: #71717A;
+
+    --accent-sage: #6B8F77;
+    --accent-sage-dark: #4D6A56;
+    --accent-sage-light: #1E2721;
+    --accent-sage-border: #3A4E40;
+
+    --accent-amber: #F59E0B;
+    --accent-amber-light: #2A2111;
+    --accent-amber-border: #78350F;
+
+    --border-paper: #282A33;
+    --border-paper-strong: #373A47;
+
+    --shadow-paper: 0 1px 3px rgba(0, 0, 0, 0.3);
+    --shadow-lift: 0 4px 14px rgba(0, 0, 0, 0.4);
+  }
+}
+
+body {
+  background-color: var(--surface-paper);
+  color: var(--ink-primary);
+  font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Editorial display font */
+.font-editorial {
+  font-family: var(--font-newsreader), "Newsreader", "Charter", "Georgia", serif;
+  font-feature-settings: "onum" 1, "pnum" 1;
+}
+
+/* Interface Sans */
+.font-sans-ui {
+  font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+/* Provenance Mono */
+.font-mono-provenance {
+  font-family: var(--font-geist-mono), monospace;
+  font-feature-settings: "tnum" 1;
+}
+
+/* Custom scrollbar for academic paper reader */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-paper-strong);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-muted);
+}
+
+/* Evidence citation highlight animation */
+@keyframes citationPulse {
+  0% { background-color: rgba(253, 230, 138, 0.8); }
+  50% { background-color: rgba(253, 230, 138, 0.3); }
+  100% { background-color: rgba(253, 230, 138, 0.6); }
+}
+
+.citation-target-highlight {
+  animation: citationPulse 2.5s ease-in-out infinite alternate;
+  border-bottom: 2px solid var(--accent-amber);
+}
+
+/* Respect user's reduced-motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
