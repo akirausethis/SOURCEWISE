@@ -159,7 +159,7 @@ export default function ProjectWorkspacePage({
       const rawChunks: DocumentChunk[] = JSON.parse(localStorage.getItem("sourcewise_custom_chunks") || "[]");
       localProjects = JSON.parse(localStorage.getItem("sourcewise_custom_projects") || "[]");
 
-      // Auto-clean any legacy corrupted %PDF- binary entries from localStorage
+      // Auto-clean any legacy corrupted %PDF- binary or detached-buffer entries from localStorage
       const isCorruptedPDFText = (str?: string) =>
         Boolean(
           str &&
@@ -167,7 +167,8 @@ export default function ProjectWorkspacePage({
               str.includes("<</Type/Catalog") ||
               str.includes("<</Type/Page") ||
               str.includes("/FontDescriptor") ||
-              str.includes("stream JFIF"))
+              str.includes("stream JFIF") ||
+              str.includes("Document text extracted from source."))
         );
 
       const corruptedDocIds = new Set<string>();

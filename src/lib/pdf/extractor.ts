@@ -49,23 +49,24 @@ export async function extractPagesFromPDFBuffer(
   // 1. Primary Serverless Extractor: unpdf (Zero native C++/canvas dependencies, built for Vercel Serverless)
   try {
     const { extractText, getMeta } = await import("unpdf");
-    const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 
     try {
-      const meta = await getMeta(uint8);
+      // IMPORTANT: Use Uint8Array.from(buffer) to create an independent ArrayBuffer copy,
+      // because PDF.js transfers and detaches the ArrayBuffer passed into getMeta()!
+      const meta = await getMeta(Uint8Array.from(buffer));
       const info = meta?.info as Record<string, unknown> | undefined;
       if (info?.Title && typeof info.Title === "string" && !isRawPDFBinaryGarbage(info.Title)) {
-        pdfInfoTitle = info.Title.trim();
+        pdfInfoTitle = info.Title.replace(/\s+/g, " ").trim();
       }
       if (info?.Author && typeof info.Author === "string" && !isRawPDFBinaryGarbage(info.Author)) {
-        pdfInfoAuthor = info.Author.trim();
+        pdfInfoAuthor = info.Author.replace(/\s+/g, " ").trim();
       }
     } catch {
       // Metadata dictionary is optional
     }
 
-    const uint8ForText = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-    const extracted = await extractText(uint8ForText, { mergePages: false });
+    // Create a fresh independent copy of buffer for extractText()
+    const extracted = await extractText(Uint8Array.from(buffer), { mergePages: false });
 
     if (extracted && Array.isArray(extracted.text) && extracted.text.length > 0) {
       const pages = extracted.text
@@ -100,16 +101,15 @@ export async function extractPagesFromPDFBuffer(
       PDFParse.setWorker(getData());
     }
 
-    const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-    const parser = new PDFParse({ data: uint8, verbosity: 0 });
+    const parser = new PDFParse({ data: Uint8Array.from(buffer), verbosity: 0 });
 
     try {
       const infoRes = await parser.getInfo();
       if (!pdfInfoTitle && infoRes?.info?.Title && typeof infoRes.info.Title === "string" && !isRawPDFBinaryGarbage(infoRes.info.Title)) {
-        pdfInfoTitle = infoRes.info.Title.trim();
+        pdfInfoTitle = infoRes.info.Title.replace(/\s+/g, " ").trim();
       }
       if (!pdfInfoAuthor && infoRes?.info?.Author && typeof infoRes.info.Author === "string" && !isRawPDFBinaryGarbage(infoRes.info.Author)) {
-        pdfInfoAuthor = infoRes.info.Author.trim();
+        pdfInfoAuthor = infoRes.info.Author.replace(/\s+/g, " ").trim();
       }
     } catch {
       // Info dictionary is optional
@@ -321,9 +321,9 @@ export function extractBibliographicMetadata(
 
   // Journal / Venue
   let journal_or_venue: string | null = null;
-  const venueKeywords = ["Proceedings of", "Conference", "Transactions", "Journal", "NeurIPS", "ICLR", "ICML", "ACM", "IEEE", "Nature", "Science"];
+  const venueKeywords = ["Proceedings of", "Conference", "Transactions", "Journal", "NeurIPS", "ICLR", "ICML", "ACM", "IEEE", "Nature", "Science", "Direktorat", "Kementerian", "Universitas"];
   for (const line of lines.slice(0, 8)) {
-    if (venueKeywords.some((v) => line.includes(v))) {
+    if (venueKeywords.some((v) => line.toLowerCase().includes(v.toLowerCase()))) {
       journal_or_venue = line;
       break;
     }
@@ -351,20 +351,21 @@ export function chunkDocumentPages(
   let chunkGlobalIndex = 0;
 
   for (const p of pages) {
-    const paragraphs = p.text
-      .split(/\n\s*\n/)
-      .map((para) => para.trim())
-      .filter((para) => para.length > 5);
+    const hasDoubleNewlines = /\n\s*\n/.test(p.text);
+    const joiner = hasDoubleNewlines ? "\n\n" : "\n";
+    let segments = (hasDoubleNewlines ? p.text.split(/\n\s*\n/) : p.text.split(/\n/))
+      .map((seg) => seg.trim())
+      .filter((seg) => seg.length > 0);
 
-    if (paragraphs.length === 0 && p.text.trim().length > 0) {
-      paragraphs.push(p.text.trim());
+    if (segments.length === 0 && p.text.trim().length > 0) {
+      segments = [p.text.trim()];
     }
 
     let currentChunk = "";
     let charStart = 0;
 
-    for (const para of paragraphs) {
-      if (currentChunk.length + para.length > targetChunkChars && currentChunk.length > 0) {
+    for (const seg of segments) {
+      if (currentChunk.length + seg.length > targetChunkChars && currentChunk.length > 0) {
         const charEnd = charStart + currentChunk.length;
         chunks.push({
           id: `chk_${documentId}_${chunkGlobalIndex}`,
@@ -380,7 +381,7 @@ export function chunkDocumentPages(
         charStart = charEnd + 1;
         currentChunk = "";
       }
-      currentChunk += (currentChunk.length > 0 ? "\n\n" : "") + para;
+      currentChunk += (currentChunk.length > 0 ? joiner : "") + seg;
     }
 
     if (currentChunk.trim().length > 0) {

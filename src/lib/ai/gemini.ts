@@ -35,7 +35,7 @@ function rankEvidenceChunks(
     "what", "how", "why", "when", "where", "who", "which", "this", "that", "these", "those",
     "the", "and", "for", "with", "from", "about", "into", "explain", "tell", "paper", "papers",
     "simple", "words", "summary", "summarize", "main", "idea", "does", "did", "are", "was", "were",
-    "can", "you", "please", "give", "show",
+    "can", "you", "please", "give", "show", "yang", "dan", "dari", "pada", "dalam", "untuk", "apa",
   ]);
 
   const queryTerms = question
@@ -48,20 +48,31 @@ function rankEvidenceChunks(
     const textLower = chunk.content.toLowerCase();
     let score = 0;
 
-    // Prioritize the paper the user currently has open in the reader
+    // Strongly prioritize the paper the user currently has open in the reader
     if (selectedPaperId && chunk.document_id === selectedPaperId) {
-      score += 4;
+      score += 15;
     }
 
     for (const term of queryTerms) {
       if (textLower.includes(term)) {
-        score += 5;
+        score += 8;
         const occurrences = (textLower.match(new RegExp(term, "g")) || []).length;
         score += Math.min(occurrences * 1.5, 6);
       }
     }
 
-    if (chunk.content.length > 120) score += 0.5;
+    // Prefer rich explanatory paragraphs over 2-line cover pages or dotted Table of Contents
+    const hasTocDots = /\.{6,}/.test(chunk.content);
+    if (hasTocDots) {
+      score -= 4;
+    } else if (chunk.content.length > 220) {
+      score += 3;
+    } else if (chunk.content.length > 120) {
+      score += 1.5;
+    } else if (chunk.content.length < 110) {
+      score -= 2;
+    }
+
     return { chunk, score };
   });
 
