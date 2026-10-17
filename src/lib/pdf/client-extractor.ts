@@ -130,26 +130,42 @@ export function extractMetadataClient(
   if (pdfInfoAuthor && pdfInfoAuthor.length > 2) {
     authors.push(pdfInfoAuthor);
   } else {
-    const abstractIdx = lines.findIndex((l) => l.toLowerCase().startsWith("abstract"));
-    const candidateAuthorLines = lines
-      .slice(1, abstractIdx > 1 ? abstractIdx : 4)
-      .filter(
-        (l) =>
-          !l.toLowerCase().includes("university") &&
-          !l.toLowerCase().includes("department") &&
-          !l.toLowerCase().includes("institute") &&
-          !l.toLowerCase().includes("laboratory") &&
-          !l.toLowerCase().includes("arxiv") &&
-          l.length < 120
-      );
+    // 1. Check for parenthesized or labeled academic author on the first page, e.g. "(Prof. Imam Sudiyat, S.H.)" or "Penyusun: ..."
+    const parenAuthorMatch = firstPageText.match(
+      /\(((?:Prof\.|Dr\.|Ir\.|H\.|Hj\.| Drs\.|Dra\.)[^)\n]{3,65})\)/i
+    );
+    const labeledAuthorMatch = firstPageText.match(
+      /(?:Oleh|Penyusun|Penulis|Author)\s*[:\-]\s*([^\n]{3,65})/i
+    );
+    if (parenAuthorMatch && parenAuthorMatch[1]) {
+      authors.push(parenAuthorMatch[1].trim());
+    } else if (labeledAuthorMatch && labeledAuthorMatch[1]) {
+      authors.push(labeledAuthorMatch[1].trim());
+    } else {
+      const abstractIdx = lines.findIndex((l) => l.toLowerCase().startsWith("abstract"));
+      const candidateAuthorLines = lines
+        .slice(1, abstractIdx > 1 ? abstractIdx : 4)
+        .filter(
+          (l) =>
+            !/^\d+[.)]/.test(l) &&
+            !/^[a-z][.)]\s/i.test(l) &&
+            !/^(bab|pendahuluan|daftar isi|kegiatan pembelajaran|masa kompeni|sejarah)/i.test(l) &&
+            !l.toLowerCase().includes("university") &&
+            !l.toLowerCase().includes("department") &&
+            !l.toLowerCase().includes("institute") &&
+            !l.toLowerCase().includes("laboratory") &&
+            !l.toLowerCase().includes("arxiv") &&
+            l.length < 90
+        );
 
-    if (candidateAuthorLines.length > 0) {
-      const rawAuthors = candidateAuthorLines[0];
-      const splitAuthors = rawAuthors.split(/,| and |&|\band\b/);
-      for (const a of splitAuthors) {
-        const trimmed = a.trim().replace(/[*†‡0-9]/g, "");
-        if (trimmed.length > 2 && trimmed.length < 50) {
-          authors.push(trimmed);
+      if (candidateAuthorLines.length > 0) {
+        const rawAuthors = candidateAuthorLines[0];
+        const splitAuthors = rawAuthors.split(/,| and |&|\band\b/);
+        for (const a of splitAuthors) {
+          const trimmed = a.trim().replace(/[*†‡0-9()]/g, "").replace(/^[.\-\s]+|[.\-\s]+$/g, "");
+          if (trimmed.length > 2 && trimmed.length < 50) {
+            authors.push(trimmed);
+          }
         }
       }
     }
@@ -293,7 +309,6 @@ export async function extractDocumentInBrowser(
   let rawPages: { page_number: number; text: string; image_url?: string }[] = [];
   let pdfInfoTitle: string | undefined;
   let pdfInfoAuthor: string | undefined;
-  let hasSelectableText = false;
 
   if (isPDF) {
     onProgress?.("📄 Opening PDF in browser...");
@@ -315,7 +330,6 @@ export async function extractDocumentInBrowser(
 
     const pdf = await getDocumentProxy(new Uint8Array(arrayBuffer.slice(0)));
     const totalPages = pdf.numPages || 1;
-    let totalExtractedChars = 0;
 
     for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
       onProgress?.(`📄 Reading PDF page ${pageNum} of ${totalPages}...`);
@@ -343,8 +357,6 @@ export async function extractDocumentInBrowser(
       } catch {
         pageText = "";
       }
-
-      totalExtractedChars += pageText.length;
 
       // 2. Render visual PDF page onto canvas in browser (up to 60 pages) so the user always sees their REAL PDF on every page
       let pageImageUrl: string | undefined;
@@ -375,51 +387,53 @@ export async function extractDocumentInBrowser(
       });
     }
 
-    const avgCharsPerPage = totalPages > 0 ? totalExtractedChars / totalPages : 0;
-    hasSelectableText = totalExtractedChars >= 40 && avgCharsPerPage >= 15;
-
-    // 3. If this is a SCANNED PDF (pages are images with little or no selectable text), run OCR on the rendered page images!
-    if (!hasSelectableText && rawPages.some((p) => Boolean(p.image_url))) {
-      const pagesNeedingOcr = rawPages
-        .filter((p) => p.text.length < 25 && Boolean(p.image_url))
-        .slice(0, 12);
-
-      // 3A. First try fast Gemini Vision OCR via /api/papers if an API key is configured
+    // 3. If ANY pages in the PDF are scanned images with little or no selectable text, run OCR on ALL of them!
+    const pagesMissingText = rawPages.filter((p) => p.text.length < 25 && Boolean(p.image_url));
+    if (pagesMissingText.length > 0) {
+      // 3A. First try fast Gemini Vision OCR via /api/papers in batches of 6 pages if an API key is configured
       try {
-        onProgress?.("🔍 Scanned PDF detected — running AI Vision OCR...");
         const userStoredKey =
           typeof window !== "undefined" ? localStorage.getItem("sourcewise_gemini_key") : null;
-        const ocrRes = await fetch("/api/papers", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "ocr_pages",
-            apiKey: userStoredKey || undefined,
-            scannedPages: pagesNeedingOcr.slice(0, 8).map((p) => ({
-              page_number: p.page_number,
-              dataUrl: p.image_url,
-            })),
-          }),
-        });
-        if (ocrRes.ok) {
-          const ocrData = await ocrRes.json();
-          if (Array.isArray(ocrData.ocrPages) && ocrData.ocrPages.length > 0) {
-            for (const item of ocrData.ocrPages) {
-              const target = rawPages.find((rp) => rp.page_number === item.page_number);
-              if (target && item.text && item.text.trim().length > 10) {
-                target.text = item.text.trim();
+        for (let bStart = 0; bStart < pagesMissingText.length; bStart += 6) {
+          const batch = pagesMissingText.slice(bStart, bStart + 6);
+          onProgress?.(
+            `🔍 Scanned PDF detected — running AI Vision OCR (pages ${batch[0].page_number}–${batch[batch.length - 1].page_number} of ${totalPages})...`
+          );
+          const ocrRes = await fetch("/api/papers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "ocr_pages",
+              apiKey: userStoredKey || undefined,
+              scannedPages: batch.map((p) => ({
+                page_number: p.page_number,
+                dataUrl: p.image_url,
+              })),
+            }),
+          });
+          if (ocrRes.ok) {
+            const ocrData = await ocrRes.json();
+            if (Array.isArray(ocrData.ocrPages) && ocrData.ocrPages.length > 0) {
+              for (const item of ocrData.ocrPages) {
+                const target = rawPages.find((rp) => rp.page_number === item.page_number);
+                if (target && item.text && item.text.trim().length > 10) {
+                  target.text = item.text.trim();
+                }
               }
+            } else {
+              // No server/user Gemini key active; switch immediately to browser Tesseract OCR for all pages
+              break;
             }
+          } else {
+            break;
           }
         }
       } catch {
         // Proceed to browser Tesseract OCR fallback
       }
 
-      // 3B. Browser Tesseract.js OCR fallback for any scanned pages still needing text
-      const stillEmptyPages = rawPages
-        .filter((p) => p.text.length < 25 && Boolean(p.image_url))
-        .slice(0, 10);
+      // 3B. Browser Tesseract.js OCR fallback for ALL remaining scanned pages (no 10-page cap!)
+      const stillEmptyPages = rawPages.filter((p) => p.text.length < 25 && Boolean(p.image_url));
 
       if (stillEmptyPages.length > 0 && typeof window !== "undefined") {
         try {
@@ -429,12 +443,12 @@ export async function extractDocumentInBrowser(
             (Tesseract as unknown as { default?: { createWorker?: typeof Tesseract.createWorker } })
               .default?.createWorker;
           if (createWorker) {
-            onProgress?.("🔍 Loading OCR engine for scanned PDF...");
+            onProgress?.("🔍 Loading OCR engine to read all scanned pages...");
             const worker = await createWorker("ind+eng");
             for (let idx = 0; idx < stillEmptyPages.length; idx++) {
               const targetPage = stillEmptyPages[idx];
               onProgress?.(
-                `🔍 Reading scanned page ${targetPage.page_number} (${idx + 1}/${stillEmptyPages.length})...`
+                `🔍 Reading text from scanned page ${targetPage.page_number} of ${totalPages} (${idx + 1}/${stillEmptyPages.length})...`
               );
               if (targetPage.image_url) {
                 const {
@@ -475,7 +489,6 @@ export async function extractDocumentInBrowser(
   } else {
     const rawText = await file.text();
     rawPages = splitTextToPagesClient(rawText);
-    hasSelectableText = rawPages.length > 0;
   }
 
   const fullTextSample = rawPages
@@ -537,3 +550,57 @@ export async function extractDocumentInBrowser(
     hasSelectableText: pages.length > 0,
   };
 }
+
+/**
+ * Runs on-demand OCR on a single rendered PDF page dataUrl (via Gemini Vision API if available, or Tesseract.js in browser).
+ */
+export async function ocrSinglePageImageInBrowser(
+  pageNumber: number,
+  imageUrl: string
+): Promise<string> {
+  if (!imageUrl || typeof window === "undefined") return "";
+
+  try {
+    const userStoredKey = localStorage.getItem("sourcewise_gemini_key");
+    const ocrRes = await fetch("/api/papers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "ocr_pages",
+        apiKey: userStoredKey || undefined,
+        scannedPages: [{ page_number: pageNumber, dataUrl: imageUrl }],
+      }),
+    });
+    if (ocrRes.ok) {
+      const ocrData = await ocrRes.json();
+      if (Array.isArray(ocrData.ocrPages) && ocrData.ocrPages[0]?.text) {
+        const cleaned = cleanChunkForDisplay(ocrData.ocrPages[0].text);
+        if (cleaned.length > 15) return cleaned;
+      }
+    }
+  } catch {
+    // Fallback to Tesseract
+  }
+
+  try {
+    const Tesseract = await import("tesseract.js");
+    const createWorker =
+      Tesseract.createWorker ||
+      (Tesseract as unknown as { default?: { createWorker?: typeof Tesseract.createWorker } })
+        .default?.createWorker;
+    if (createWorker) {
+      const worker = await createWorker("ind+eng");
+      const {
+        data: { text },
+      } = await worker.recognize(imageUrl);
+      await worker.terminate();
+      const cleaned = cleanChunkForDisplay(text || "");
+      if (cleaned.length > 10) return cleaned;
+    }
+  } catch (err) {
+    console.warn("Single-page OCR error:", err);
+  }
+
+  return "";
+}
+

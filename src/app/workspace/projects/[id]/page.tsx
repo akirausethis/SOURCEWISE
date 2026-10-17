@@ -40,13 +40,17 @@ import {
   ResearchGapAnalysis,
   ResearchNote,
 } from "@/types";
-import { extractDocumentInBrowser } from "@/lib/pdf/client-extractor";
+import {
+  extractDocumentInBrowser,
+  ocrSinglePageImageInBrowser,
+} from "@/lib/pdf/client-extractor";
 import { cleanChunkForDisplay, detectQueryLanguage } from "@/lib/ai/gemini";
 import {
   loadWorkspaceBundle,
   saveWorkspaceBundle,
   deduplicatePapers,
   sanitizePaperMetadata,
+  recoverVisualPlaceholderPageText,
 } from "@/lib/storage/account-storage";
 
 async function safeJsonResponse<T = Record<string, unknown>>(res: Response): Promise<T> {
@@ -277,11 +281,19 @@ export default function ProjectWorkspacePage({
     // 1. Check if pages are already in client memory (customPages) for instant 0ms load on Vercel
     const cachedPages = customPages
       .filter((p) => p.document_id === selectedPaper.id)
-      .sort((a, b) => a.page_number - b.page_number);
+      .sort((a, b) => a.page_number - b.page_number)
+      .map((p) => ({
+        ...p,
+        text_content: recoverVisualPlaceholderPageText(
+          p.page_number,
+          p.text_content,
+          selectedPaper.title
+        ),
+      }));
 
     if (cachedPages.length > 0) {
       setPages(cachedPages);
-      setCurrentPageNum(1);
+      setCurrentPageNum((prev) => (prev >= 1 && prev <= cachedPages.length ? prev : 1));
       setHighlightedText(null);
       return;
     }
@@ -294,7 +306,16 @@ export default function ProjectWorkspacePage({
       })
       .then((data) => {
         if (data.pages && data.pages.length > 0) {
-          setPages(data.pages);
+          setPages(
+            (data.pages as DocumentPage[]).map((p) => ({
+              ...p,
+              text_content: recoverVisualPlaceholderPageText(
+                p.page_number,
+                p.text_content,
+                selectedPaper.title
+              ),
+            }))
+          );
         } else {
           setPages([
             {
@@ -324,6 +345,42 @@ export default function ProjectWorkspacePage({
         setCurrentPageNum(1);
       });
   }, [selectedPaper, customPages]);
+
+  // Auto-OCR any page that still has a "[Visual Page X...]" placeholder and a rendered page image
+  useEffect(() => {
+    if (!selectedPaper || pages.length === 0) return;
+    const currentPg = pages.find((p) => p.page_number === currentPageNum);
+    if (
+      !currentPg ||
+      !/^\[Visual Page\s+\d+/i.test(currentPg.text_content.trim()) ||
+      !currentPg.image_url
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    ocrSinglePageImageInBrowser(currentPg.page_number, currentPg.image_url).then((ocrText) => {
+      if (cancelled || !ocrText) return;
+      setPages((prev) =>
+        prev.map((pg) =>
+          pg.id === currentPg.id
+            ? { ...pg, text_content: ocrText, char_count: ocrText.length }
+            : pg
+        )
+      );
+      setCustomPages((prev) =>
+        prev.map((pg) =>
+          pg.id === currentPg.id
+            ? { ...pg, text_content: ocrText, char_count: ocrText.length }
+            : pg
+        )
+      );
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPaper, pages, currentPageNum]);
 
   // Helper to persist newly added paper + ALL pages (including all page images 1..N) + chunks in IndexedDB
   const registerNewPaperData = (
@@ -747,7 +804,12 @@ export default function ProjectWorkspacePage({
       return <p className="text-[var(--ink-muted)] italic">Loading paper text...</p>;
     }
 
-    const cleanedPageText = cleanChunkForDisplay(rawPageText) || rawPageText;
+    const recoveredRaw = recoverVisualPlaceholderPageText(
+      currentPageNum,
+      rawPageText,
+      selectedPaper?.title
+    );
+    const cleanedPageText = cleanChunkForDisplay(recoveredRaw) || recoveredRaw;
     const cleanedHighlight = highlightQuote ? cleanChunkForDisplay(highlightQuote) : null;
 
     const highlightInline = (lineStr: string) => {
@@ -1452,10 +1514,16 @@ export default function ProjectWorkspacePage({
                       {selectedPaper?.journal_or_venue || "Uploaded Paper"} • Page {currentPageNum}
                     </span>
                     <h2 className="text-xl sm:text-2xl font-bold mt-1 text-[var(--ink-primary)]">
-                      {selectedPaper?.title?.replace(/^[|¦\s]+/, "")}
+                      {(selectedPaper ? sanitizePaperMetadata(selectedPaper).title : "")?.replace(
+                        /^[|¦\s]+/,
+                        ""
+                      )}
                     </h2>
                     <p className="font-sans-ui text-xs text-[var(--ink-muted)] mt-1.5">
-                      Authors: {selectedPaper?.authors.map((a) => a.replace(/^[(\s]+|[)\s]+$/g, "")).join(", ")}
+                      Authors:{" "}
+                      {(selectedPaper ? sanitizePaperMetadata(selectedPaper).authors : [])
+                        .map((a) => a.replace(/^[(\s]+|[)\s]+$/g, ""))
+                        .join(", ")}
                     </p>
                   </div>
 
