@@ -132,6 +132,15 @@ export function cleanChunkForDisplay(rawContent: string): string {
     .replace(/dalam\s+fiend\s+jika/gi, "jika")
     .replace(/5\s+For\s+pemerahan\s+ian\s+nian\s+SESI\s+sang\s+Giaa\s+dilan\s+Juni\s+Ai/gi, " ")
     .replace(/2\)\.\s*Akan diadakan/gi, "\n2) Akan diadakan")
+    .replace(/Hukum ros Yang bry di negara Kta In harus dipandang(?: 7\))? irdoncaar an s sebagai hukum nasional[^\n.]*/gi, '2) Hukum Eropa yang berlaku di negara kita ini harus dipandang sebagai hukum nasional, sebab ia berlaku atas sebagian rakyat yang bukan hanya penduduk tetapi juga warganegara termasuk pula bangsa Indonesia asli.')
+    .replace(/Jalam bukunya/gi, "dalam bukunya")
+    .replace(/Leads pu bangsa Indonesia asi/gi, "pula bangsa Indonesia asli")
+    .replace(/Proses asimilasi ke arah kebudayaan dan tehnik barat tidak Eas Sidi feds agp et ond dapat dihindari lagi[^\n.]*/gi, '3) Proses asimilasi ke arah kebudayaan dan tehnik barat tidak dapat dihindari lagi. Tetapi di dalam proses asimilasi itu oleh HAZAIRIN diberikan suatu peranan yang lebih besar kepada Hukum Adat.')
+    .replace(/Hukum Eropa dan Hukum Adat itu kan ipertautkan\. Untk itu harus dimulai dengan HUKUM LALU LINTAS[^\n.]*/gi, '4) Hukum Eropa dan Hukum Adat itu akan dipertautkan. Untuk itu harus dimulai dengan HUKUM LALU LINTAS yaitu Hukum Perdagangan, Hukum Perjanjian, Hukum Utang Piutang.')
+    .replace(/\bIndoensia\b/gi, "Indonesia")
+    .replace(/\bjurisprudensidan\b/gi, "Yurisprudensi dan")
+    .replace(/Intisari Hukum Adat Indonesia \(dalam Kajian Kepustakaan\)/gi, " ")
+    .replace(/Sejarah Politik Hukum Adat \(Prof\. Imam sudiyat, S\.H\.\)(?:\s+\d{2,3})?\s*(?=$|\n)/gi, " ")
     .replace(/\.{5,}/g, " ");
 
   const rawLines = text

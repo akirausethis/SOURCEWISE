@@ -286,6 +286,63 @@ export function chunkPagesClient(
 }
 
 /**
+ * Runs OCR on a rendered page image using a Tesseract worker.
+ * If the image is a landscape open two-page book scan (width > height * 1.25),
+ * it splits the page into left and right halves to prevent line mingling across the spine!
+ */
+async function recognizePageImageWithWorker(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  worker: any,
+  imageUrl: string
+): Promise<string> {
+  if (typeof window === "undefined" || !imageUrl) return "";
+
+  try {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+      img.src = imageUrl;
+    });
+
+    if (img.naturalWidth > img.naturalHeight * 1.25) {
+      const halfW = Math.floor(img.naturalWidth * 0.51);
+      const overlapStart = Math.floor(img.naturalWidth * 0.49);
+      const h = img.naturalHeight;
+
+      const leftCanvas = document.createElement("canvas");
+      leftCanvas.width = halfW;
+      leftCanvas.height = h;
+      const ctxL = leftCanvas.getContext("2d");
+
+      const rightCanvas = document.createElement("canvas");
+      rightCanvas.width = halfW;
+      rightCanvas.height = h;
+      const ctxR = rightCanvas.getContext("2d");
+
+      if (ctxL && ctxR) {
+        ctxL.drawImage(img, 0, 0, halfW, h, 0, 0, halfW, h);
+        ctxR.drawImage(img, overlapStart, 0, halfW, h, 0, 0, halfW, h);
+
+        const [resL, resR] = await Promise.all([
+          worker.recognize(leftCanvas),
+          worker.recognize(rightCanvas),
+        ]);
+        const textL = (resL?.data?.text || "").trim();
+        const textR = (resR?.data?.text || "").trim();
+        return `${textL}\n\n${textR}`.trim();
+      }
+    }
+  } catch {
+    // fallback to full image
+  }
+
+  const res = await worker.recognize(imageUrl);
+  return (res?.data?.text || "").trim();
+}
+
+/**
  * Extracts text pages, visual page images, metadata, and chunks from a File (.pdf, .txt, .md, .tex) directly in the browser.
  * Supports BOTH digital text PDFs and scanned image-only PDFs (via Gemini Vision OCR + Tesseract.js browser OCR fallback).
  */
@@ -362,7 +419,7 @@ export async function extractDocumentInBrowser(
       let pageImageUrl: string | undefined;
       if (typeof document !== "undefined" && pageNum <= 60) {
         try {
-          const viewport = page.getViewport({ scale: 1.15 });
+          const viewport = page.getViewport({ scale: 1.5 });
           const canvas = document.createElement("canvas");
           canvas.width = viewport.width;
           canvas.height = viewport.height;
@@ -373,7 +430,7 @@ export async function extractDocumentInBrowser(
               canvasContext: ctx,
               viewport,
             }).promise;
-            pageImageUrl = canvas.toDataURL("image/jpeg", 0.65);
+            pageImageUrl = canvas.toDataURL("image/jpeg", 0.82);
           }
         } catch (renderErr) {
           console.warn(`Canvas render skipped for page ${pageNum}:`, renderErr);
@@ -443,17 +500,15 @@ export async function extractDocumentInBrowser(
             (Tesseract as unknown as { default?: { createWorker?: typeof Tesseract.createWorker } })
               .default?.createWorker;
           if (createWorker) {
-            onProgress?.("🔍 Loading OCR engine to read all scanned pages...");
+            onProgress?.("🔍 Menyiapkan mesin OCR untuk membaca seluruh halaman scan...");
             const worker = await createWorker("ind+eng");
             for (let idx = 0; idx < stillEmptyPages.length; idx++) {
               const targetPage = stillEmptyPages[idx];
               onProgress?.(
-                `🔍 Reading text from scanned page ${targetPage.page_number} of ${totalPages} (${idx + 1}/${stillEmptyPages.length})...`
+                `🔍 Membaca & OCR teks halaman scan ${targetPage.page_number} dari ${totalPages}...`
               );
               if (targetPage.image_url) {
-                const {
-                  data: { text },
-                } = await worker.recognize(targetPage.image_url);
+                const text = await recognizePageImageWithWorker(worker, targetPage.image_url);
                 const cleanedOcr = (text || "")
                   .replace(/[ \t]+/g, " ")
                   .replace(/\n{3,}/g, "\n\n")
@@ -469,8 +524,6 @@ export async function extractDocumentInBrowser(
           console.warn("Browser Tesseract OCR fallback encountered error:", tessErr);
         }
       }
-
-      hasSelectableText = rawPages.some((p) => p.text.trim().length > 15);
     }
 
     // Ensure every physical page of the PDF is preserved in the reader and clean any OCR artifacts / outline structure
@@ -590,9 +643,7 @@ export async function ocrSinglePageImageInBrowser(
         .default?.createWorker;
     if (createWorker) {
       const worker = await createWorker("ind+eng");
-      const {
-        data: { text },
-      } = await worker.recognize(imageUrl);
+      const text = await recognizePageImageWithWorker(worker, imageUrl);
       await worker.terminate();
       const cleaned = cleanChunkForDisplay(text || "");
       if (cleaned.length > 10) return cleaned;

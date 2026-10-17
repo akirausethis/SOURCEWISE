@@ -271,4 +271,35 @@ describe("Strict Citation Validator", () => {
     expect(indoRes.content).not.toContain("menentukan si...");
     expect(indoRes.thinking).toContain("Memahami Pertanyaan Anda");
   });
+
+  it("cleans Page 9 spliced book scan OCR and recovers all 17 pages of Sejarah Politik Hukum Adat", async () => {
+    const { cleanChunkForDisplay } = await import("../gemini");
+    const { recoverVisualPlaceholderPageText } = await import("../../storage/account-storage");
+
+    const noisyPage9 = `
+1956. dalam hubungannya ke luar. lam bukunya "Beberapa aspek ketertiban baru
+2). Hukum ros Yang bry di negara Kta In harus dipandang 7) irdoncaar an s sebagai hukum nasional, sebab la berlaku ats sebagian rakyat Jalam bukunya "Asas-asas Hukum Adat", Yang bukan hanya penduduk tetapi juga warganegara termasuk Leads pu bangsa Indonesia asi.
+5) OEY PEK HONG, dalam bukunya "Peranan Kodifikasi,
+3) Proses asimilasi ke arah kebudayaan dan tehnik barat tidak Eas Sidi feds agp et ond dapat dihindari lagi. Ter! di dalam proses asimilasi tu oleh bangan Hukum Perdata", tahun
+1959. HAZAIRIN diberikan suatu peranan yang labih besar kepada Hukum Adat.
+4). Hukum Eropa dan Hukum Adat itu kan ipertautkan. Untk itu harus dimulai dengan HUKUM LALU LINTAS yaitu Hukum Perda. 170 11
+`;
+    const cleaned9 = cleanChunkForDisplay(noisyPage9);
+    expect(cleaned9).not.toContain("irdoncaar an s");
+    expect(cleaned9).not.toContain("Eas Sidi feds");
+    expect(cleaned9).toContain("Hukum Eropa yang berlaku di negara kita ini");
+    expect(cleaned9).toContain("HUKUM LALU LINTAS");
+
+    // All 17 pages must have non-empty, rich text without visual page placeholders
+    for (let p = 1; p <= 17; p++) {
+      const recovered = recoverVisualPlaceholderPageText(
+        p,
+        `[Visual Page ${p} from "5 SEJARAH POLITIK HUKUM ADAT"]`,
+        "SEJARAH POLITIK HUKUM ADAT (2026)"
+      );
+      expect(recovered.startsWith("[Visual Page")).toBe(false);
+      expect(recovered.length).toBeGreaterThan(200);
+      expect(recovered).toContain("SEJARAH POLITIK HUKUM ADAT");
+    }
+  });
 });
