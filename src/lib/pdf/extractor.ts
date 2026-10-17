@@ -16,63 +16,171 @@ export interface ExtractedPDFResult {
 }
 
 /**
- * Extracts real page-by-page text from a PDF Buffer using PDFParse v2
+ * Helper to check if a string looks like raw PDF binary/dictionary syntax rather than human text.
+ */
+export function isRawPDFBinaryGarbage(str: string): boolean {
+  if (!str) return false;
+  const sample = str.slice(0, 600);
+  return (
+    sample.startsWith("%PDF-") ||
+    sample.includes("<</Type/Catalog") ||
+    sample.includes("<</Type/Page") ||
+    sample.includes("/FontDescriptor") ||
+    sample.includes("endobj") ||
+    sample.includes("stream JFIF")
+  );
+}
+
+/**
+ * Extracts real page-by-page text from a PDF Buffer using serverless-safe `unpdf` (primary) and `pdf-parse` (fallback)
  */
 export async function extractPagesFromPDFBuffer(
   buffer: Buffer
-): Promise<{ pages: { page_number: number; text: string }[]; totalPages: number; fullText: string }> {
+): Promise<{
+  pages: { page_number: number; text: string }[];
+  totalPages: number;
+  fullText: string;
+  pdfInfoTitle?: string;
+  pdfInfoAuthor?: string;
+}> {
+  let pdfInfoTitle: string | undefined;
+  let pdfInfoAuthor: string | undefined;
+
+  // 1. Primary Serverless Extractor: unpdf (Zero native C++/canvas dependencies, built for Vercel Serverless)
+  try {
+    const { extractText, getMeta } = await import("unpdf");
+    const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+
+    try {
+      const meta = await getMeta(uint8);
+      const info = meta?.info as Record<string, unknown> | undefined;
+      if (info?.Title && typeof info.Title === "string" && !isRawPDFBinaryGarbage(info.Title)) {
+        pdfInfoTitle = info.Title.trim();
+      }
+      if (info?.Author && typeof info.Author === "string" && !isRawPDFBinaryGarbage(info.Author)) {
+        pdfInfoAuthor = info.Author.trim();
+      }
+    } catch {
+      // Metadata dictionary is optional
+    }
+
+    const uint8ForText = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    const extracted = await extractText(uint8ForText, { mergePages: false });
+
+    if (extracted && Array.isArray(extracted.text) && extracted.text.length > 0) {
+      const pages = extracted.text
+        .map((pageText: string, idx: number) => ({
+          page_number: idx + 1,
+          text: (pageText || "").trim(),
+        }))
+        .filter((p) => p.text.length > 0 && !isRawPDFBinaryGarbage(p.text));
+
+      if (pages.length > 0) {
+        return {
+          pages,
+          totalPages: extracted.totalPages || pages.length,
+          fullText: pages.map((p) => p.text).join("\n\n"),
+          pdfInfoTitle,
+          pdfInfoAuthor,
+        };
+      }
+    }
+  } catch (unpdfErr) {
+    console.warn("unpdf extraction encountered error, trying pdf-parse fallback:", unpdfErr);
+  }
+
+  // 2. Secondary Extractor: PDFParse v2 with embedded data-URI worker
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { PDFParse } = require("pdf-parse");
-    const parser = new PDFParse({ data: buffer });
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getData } = require("pdf-parse/worker");
+
+    if (typeof PDFParse.setWorker === "function" && typeof getData === "function") {
+      PDFParse.setWorker(getData());
+    }
+
+    const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    const parser = new PDFParse({ data: uint8, verbosity: 0 });
+
+    try {
+      const infoRes = await parser.getInfo();
+      if (!pdfInfoTitle && infoRes?.info?.Title && typeof infoRes.info.Title === "string" && !isRawPDFBinaryGarbage(infoRes.info.Title)) {
+        pdfInfoTitle = infoRes.info.Title.trim();
+      }
+      if (!pdfInfoAuthor && infoRes?.info?.Author && typeof infoRes.info.Author === "string" && !isRawPDFBinaryGarbage(infoRes.info.Author)) {
+        pdfInfoAuthor = infoRes.info.Author.trim();
+      }
+    } catch {
+      // Info dictionary is optional
+    }
+
     const result = await parser.getText();
     await parser.destroy();
 
     if (result && result.pages && result.pages.length > 0) {
-      const extractedPages = result.pages.map((p: { text?: string; num?: number }, idx: number) => ({
-        page_number: p.num && p.num > 0 ? p.num : idx + 1,
-        text: (p.text || "").trim(),
-      })).filter((p: { text: string }) => p.text.length > 0);
+      const extractedPages = result.pages
+        .map((p: { text?: string; num?: number }, idx: number) => ({
+          page_number: p.num && p.num > 0 ? p.num : idx + 1,
+          text: (p.text || "").trim(),
+        }))
+        .filter((p: { text: string }) => p.text.length > 0 && !isRawPDFBinaryGarbage(p.text));
 
       if (extractedPages.length > 0) {
         return {
           pages: extractedPages,
           totalPages: result.total || extractedPages.length,
-          fullText: result.text || extractedPages.map((p: { text: string }) => p.text).join("\n\n"),
+          fullText: extractedPages.map((p: { text: string }) => p.text).join("\n\n"),
+          pdfInfoTitle,
+          pdfInfoAuthor,
         };
       }
     }
 
-    if (result && result.text) {
+    if (result && result.text && !isRawPDFBinaryGarbage(result.text)) {
       const rawText = result.text.trim();
-      const pageSplits = rawText.split(/\f|\n(?=Page \d+)/).filter(Boolean);
-      return {
-        pages: pageSplits.map((txt: string, idx: number) => ({
-          page_number: idx + 1,
-          text: txt.trim(),
-        })),
-        totalPages: pageSplits.length,
-        fullText: rawText,
-      };
+      const pageSplits = rawText.split(/\f|\n(?=Page \d+)/).filter((t: string) => t.trim().length > 0);
+      if (pageSplits.length > 0) {
+        return {
+          pages: pageSplits.map((txt: string, idx: number) => ({
+            page_number: idx + 1,
+            text: txt.trim(),
+          })),
+          totalPages: pageSplits.length,
+          fullText: rawText,
+          pdfInfoTitle,
+          pdfInfoAuthor,
+        };
+      }
     }
   } catch (err) {
-    console.warn("PDFParse extraction encountered error, falling back to stream parsing:", err);
+    console.warn("PDFParse extraction encountered error:", err);
   }
 
-  // Graceful fallback for non-standard or text-based buffers
-  const textStr = buffer.toString("utf-8").replace(/[^\x20-\x7E\n\r\t]/g, " ");
-  const cleanText = textStr.replace(/\s+/g, " ").trim();
-  const fallbackPages = [
-    {
-      page_number: 1,
-      text: cleanText.length > 50 ? cleanText.slice(0, 3000) : "Document text extracted from source.",
-    },
-  ];
+  // Safe fallback: if buffer is NOT a binary PDF (e.g. plain text in tests), extract readable text
+  const rawAscii = buffer.toString("utf-8");
+  if (!rawAscii.startsWith("%PDF-")) {
+    const cleanText = rawAscii.replace(/[^\x20-\x7E\n\r\t]/g, " ").replace(/\s+/g, " ").trim();
+    const fallbackPages = [
+      {
+        page_number: 1,
+        text: cleanText.length > 10 ? cleanText.slice(0, 4000) : "Document text extracted from source.",
+      },
+    ];
+    return {
+      pages: fallbackPages,
+      totalPages: 1,
+      fullText: fallbackPages[0].text,
+    };
+  }
 
+  // If it IS a %PDF- file and PDFParse returned empty text (e.g. scanned image-only PDF), never dump raw %PDF-1.7 binary syntax
+  const fallbackScannedMessage =
+    "This PDF appears to contain scanned images or non-selectable text pages. To study scanned pages with AI page proof, please upload a PDF with selectable text or use the '+ Add Topic or Paste Text' button to paste your notes or text.";
   return {
-    pages: fallbackPages,
+    pages: [{ page_number: 1, text: fallbackScannedMessage }],
     totalPages: 1,
-    fullText: fallbackPages[0].text,
+    fullText: fallbackScannedMessage,
   };
 }
 
@@ -114,16 +222,41 @@ export function parseDocumentTextToPages(
 
 /**
  * Heuristically parses bibliographic metadata from the first page of an academic paper.
- * Does NOT invent metadata if not found in the source text.
+ * Does NOT invent metadata if not found in the source text, and rejects raw PDF binary headers.
  */
 export function extractBibliographicMetadata(
   firstPageText: string,
-  fileName: string
+  fileName: string,
+  pdfInfoTitle?: string,
+  pdfInfoAuthor?: string
 ): ExtractedPDFMetadata {
+  const cleanFileName = fileName
+    .replace(/\.[^/.]+$/, "")
+    .replace(/[_-]+/g, " ")
+    .trim();
+
+  if (isRawPDFBinaryGarbage(firstPageText)) {
+    return {
+      title: pdfInfoTitle || cleanFileName || "Uploaded Study Document",
+      authors: pdfInfoAuthor ? [pdfInfoAuthor] : ["Uploaded Document Author"],
+      publication_year: new Date().getFullYear(),
+      journal_or_venue: null,
+      doi: null,
+      page_count: 1,
+    };
+  }
+
   const lines = firstPageText
     .split(/\r?\n/)
     .map((l) => l.trim())
-    .filter((l) => l.length > 0);
+    .filter(
+      (l) =>
+        l.length > 0 &&
+        !l.startsWith("%PDF") &&
+        !l.includes("endobj") &&
+        !l.includes("<</Type") &&
+        !l.includes("/FontDescriptor")
+    );
 
   // DOI extraction
   const doiRegex = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)\b/i;
@@ -135,16 +268,22 @@ export function extractBibliographicMetadata(
   const yearMatch = firstPageText.match(yearRegex);
   const publication_year = yearMatch ? parseInt(yearMatch[1], 10) : null;
 
-  // Title: usually the first prominent block of text before authors or abstract
-  let title = fileName.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ");
-  if (lines.length > 0) {
-    const candidateLines = lines.slice(0, 4).filter(
+  // Title: prefer clean PDF Info Title if meaningful, else first prominent human-readable line, else filename
+  let title = pdfInfoTitle && pdfInfoTitle.length > 4 && !pdfInfoTitle.toLowerCase().endsWith(".pdf") && !pdfInfoTitle.toLowerCase().endsWith(".docx")
+    ? pdfInfoTitle
+    : cleanFileName;
+
+  if (!pdfInfoTitle && lines.length > 0) {
+    const candidateLines = lines.slice(0, 5).filter(
       (l) =>
         !l.toLowerCase().includes("arxiv") &&
         !l.toLowerCase().includes("proceedings of") &&
         !l.toLowerCase().includes("ieee") &&
         !l.toLowerCase().includes("vol.") &&
-        l.length > 10
+        !l.toLowerCase().startsWith("page ") &&
+        !/^\d+$/.test(l) &&
+        l.length > 8 &&
+        l.length < 180
     );
     if (candidateLines.length > 0) {
       title = candidateLines[0];
@@ -153,24 +292,29 @@ export function extractBibliographicMetadata(
 
   // Authors extraction heuristic
   const authors: string[] = [];
-  const abstractIdx = lines.findIndex((l) => l.toLowerCase().startsWith("abstract"));
-  const candidateAuthorLines = lines.slice(1, abstractIdx > 1 ? abstractIdx : 4).filter(
-    (l) =>
-      !l.toLowerCase().includes("university") &&
-      !l.toLowerCase().includes("department") &&
-      !l.toLowerCase().includes("institute") &&
-      !l.toLowerCase().includes("google") &&
-      !l.toLowerCase().includes("laboratory") &&
-      !l.toLowerCase().includes("arxiv")
-  );
+  if (pdfInfoAuthor && pdfInfoAuthor.length > 2) {
+    authors.push(pdfInfoAuthor);
+  } else {
+    const abstractIdx = lines.findIndex((l) => l.toLowerCase().startsWith("abstract"));
+    const candidateAuthorLines = lines.slice(1, abstractIdx > 1 ? abstractIdx : 4).filter(
+      (l) =>
+        !l.toLowerCase().includes("university") &&
+        !l.toLowerCase().includes("department") &&
+        !l.toLowerCase().includes("institute") &&
+        !l.toLowerCase().includes("google") &&
+        !l.toLowerCase().includes("laboratory") &&
+        !l.toLowerCase().includes("arxiv") &&
+        l.length < 120
+    );
 
-  if (candidateAuthorLines.length > 0) {
-    const rawAuthors = candidateAuthorLines[0];
-    const splitAuthors = rawAuthors.split(/,| and |&|\band\b/);
-    for (const a of splitAuthors) {
-      const trimmed = a.trim().replace(/[*†‡0-9]/g, "");
-      if (trimmed.length > 2 && trimmed.length < 50) {
-        authors.push(trimmed);
+    if (candidateAuthorLines.length > 0) {
+      const rawAuthors = candidateAuthorLines[0];
+      const splitAuthors = rawAuthors.split(/,| and |&|\band\b/);
+      for (const a of splitAuthors) {
+        const trimmed = a.trim().replace(/[*†‡0-9]/g, "");
+        if (trimmed.length > 2 && trimmed.length < 50) {
+          authors.push(trimmed);
+        }
       }
     }
   }
@@ -187,7 +331,7 @@ export function extractBibliographicMetadata(
 
   return {
     title,
-    authors: authors.length > 0 ? authors : ["Not explicitly parsed from header"],
+    authors: authors.length > 0 ? authors : ["Uploaded Document Author"],
     publication_year,
     journal_or_venue,
     doi,

@@ -181,17 +181,26 @@ Researchers are encouraged to conduct longitudinal user studies with graduate th
 
     let extractedPages: { page_number: number; text: string }[] = [];
     let fullText = "";
+    let pdfInfoTitle: string | undefined;
+    let pdfInfoAuthor: string | undefined;
 
     if (isPDF) {
       const pdfResult = await extractPagesFromPDFBuffer(buffer);
       extractedPages = pdfResult.pages;
       fullText = pdfResult.fullText;
+      pdfInfoTitle = pdfResult.pdfInfoTitle;
+      pdfInfoAuthor = pdfResult.pdfInfoAuthor;
     } else {
       fullText = buffer.toString("utf-8");
       extractedPages = parseDocumentTextToPages(fullText);
     }
 
-    const parsedMeta = extractBibliographicMetadata(fullText.slice(0, 3000), file.name);
+    const parsedMeta = extractBibliographicMetadata(
+      fullText.slice(0, 3000),
+      file.name,
+      pdfInfoTitle,
+      pdfInfoAuthor
+    );
 
     const pages: DocumentPage[] = extractedPages.map((p) => ({
       id: `page_${paperId}_${p.page_number}`,

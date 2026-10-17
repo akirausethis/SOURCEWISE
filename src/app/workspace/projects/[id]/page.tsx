@@ -154,10 +154,42 @@ export default function ProjectWorkspacePage({
     let localProjects: ResearchProject[] = [];
 
     try {
-      localPapers = JSON.parse(localStorage.getItem("sourcewise_custom_papers") || "[]");
-      localPages = JSON.parse(localStorage.getItem("sourcewise_custom_pages") || "[]");
-      localChunks = JSON.parse(localStorage.getItem("sourcewise_custom_chunks") || "[]");
+      const rawPapers: AcademicPaper[] = JSON.parse(localStorage.getItem("sourcewise_custom_papers") || "[]");
+      const rawPages: DocumentPage[] = JSON.parse(localStorage.getItem("sourcewise_custom_pages") || "[]");
+      const rawChunks: DocumentChunk[] = JSON.parse(localStorage.getItem("sourcewise_custom_chunks") || "[]");
       localProjects = JSON.parse(localStorage.getItem("sourcewise_custom_projects") || "[]");
+
+      // Auto-clean any legacy corrupted %PDF- binary entries from localStorage
+      const isCorruptedPDFText = (str?: string) =>
+        Boolean(
+          str &&
+            (str.includes("%PDF-") ||
+              str.includes("<</Type/Catalog") ||
+              str.includes("<</Type/Page") ||
+              str.includes("/FontDescriptor") ||
+              str.includes("stream JFIF"))
+        );
+
+      const corruptedDocIds = new Set<string>();
+      for (const p of rawPapers) {
+        if (isCorruptedPDFText(p.title)) corruptedDocIds.add(p.id);
+      }
+      for (const pg of rawPages) {
+        if (isCorruptedPDFText(pg.text_content)) corruptedDocIds.add(pg.document_id);
+      }
+
+      if (corruptedDocIds.size > 0) {
+        localPapers = rawPapers.filter((p) => !corruptedDocIds.has(p.id));
+        localPages = rawPages.filter((pg) => !corruptedDocIds.has(pg.document_id));
+        localChunks = rawChunks.filter((c) => !corruptedDocIds.has(c.document_id));
+        localStorage.setItem("sourcewise_custom_papers", JSON.stringify(localPapers));
+        localStorage.setItem("sourcewise_custom_pages", JSON.stringify(localPages));
+        localStorage.setItem("sourcewise_custom_chunks", JSON.stringify(localChunks));
+      } else {
+        localPapers = rawPapers;
+        localPages = rawPages;
+        localChunks = rawChunks;
+      }
     } catch {
       // ignore storage parse errors
     }
