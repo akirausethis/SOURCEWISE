@@ -60,6 +60,7 @@ export interface DocumentPage {
   page_number: number; // 1-indexed physical page
   char_count: number;
   text_content: string;
+  image_url?: string;
   created_at: string;
 }
 

@@ -111,7 +111,10 @@ export default function ProjectWorkspacePage({
 
   // Upload State
   const [uploading, setUploading] = useState(false);
+  const [uploadProgressText, setUploadProgressText] = useState("Reading File...");
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [pdfObjectUrls, setPdfObjectUrls] = useState<Record<string, string>>({});
+  const [readerViewMode, setReaderViewMode] = useState<"both" | "visual" | "text">("both");
 
   // Ingest Custom Topic / Manuscript Modal State
   const [showTopicModal, setShowTopicModal] = useState(false);
@@ -175,7 +178,7 @@ export default function ProjectWorkspacePage({
       const rawChunks: DocumentChunk[] = JSON.parse(localStorage.getItem("sourcewise_custom_chunks") || "[]");
       localProjects = JSON.parse(localStorage.getItem("sourcewise_custom_projects") || "[]");
 
-      // Auto-clean any legacy corrupted %PDF- binary or detached-buffer entries from localStorage
+      // Auto-clean any legacy corrupted %PDF- binary, detached-buffer, or fake fallback template entries from localStorage
       const isCorruptedPDFText = (str?: string) =>
         Boolean(
           str &&
@@ -184,7 +187,9 @@ export default function ProjectWorkspacePage({
               str.includes("<</Type/Page") ||
               str.includes("/FontDescriptor") ||
               str.includes("stream JFIF") ||
-              str.includes("Document text extracted from source."))
+              str.includes("Document text extracted from source.") ||
+              str.includes("## Page 2: Theoretical Framework & Related Literature") ||
+              str.includes("originate from core principles of formal analysis and domain modeling"))
         );
 
       const corruptedDocIds = new Set<string>();
@@ -358,10 +363,21 @@ export default function ProjectWorkspacePage({
         "sourcewise_custom_papers",
         JSON.stringify([newPaper, ...allStoredPapers])
       );
-      localStorage.setItem("sourcewise_custom_pages", JSON.stringify(updatedCustomPages));
+      // Keep localStorage lightweight (<4MB) by omitting heavy base64 page images beyond page 2
+      const storageSafePages = updatedCustomPages.map((pg) =>
+        pg.page_number <= 2 ? pg : { ...pg, image_url: undefined }
+      );
+      localStorage.setItem("sourcewise_custom_pages", JSON.stringify(storageSafePages));
       localStorage.setItem("sourcewise_custom_chunks", JSON.stringify(updatedCustomChunks));
     } catch {
-      // ignore storage quota errors
+      // If quota exceeded with images, store text-only pages in localStorage
+      try {
+        const textOnlyPages = updatedCustomPages.map((pg) => ({ ...pg, image_url: undefined }));
+        localStorage.setItem("sourcewise_custom_pages", JSON.stringify(textOnlyPages));
+        localStorage.setItem("sourcewise_custom_chunks", JSON.stringify(updatedCustomChunks));
+      } catch {
+        // ignore storage quota errors
+      }
     }
 
     setPapers((prev) => [newPaper, ...prev]);
@@ -400,7 +416,7 @@ export default function ProjectWorkspacePage({
     });
 
     setUploadSuccessBanner(
-      `✅ Added "${newPaper.title}" (${newPages.length} Pages)! You can now read it on the left and ask the AI questions about it on the right.`
+      `✅ Added "${newPaper.title}" (${newPages.length} Pages)! You can now read your real PDF on the left and ask the AI questions about it on the right.`
     );
     setTimeout(() => setUploadSuccessBanner(null), 8000);
 
@@ -454,7 +470,9 @@ export default function ProjectWorkspacePage({
       selectedPaper && pages.length > 0
         ? pages
         : customPages.filter((pg) => !selectedPaper || pg.document_id === selectedPaper.id);
-    const payloadPages = activePaperPages.slice(0, 120);
+    const payloadPages = activePaperPages
+      .slice(0, 120)
+      .map((pg) => ({ ...pg, image_url: undefined }));
 
     const activePaperChunks = selectedPaper
       ? customChunks.filter((c) => c.document_id === selectedPaper.id)
@@ -603,29 +621,41 @@ export default function ProjectWorkspacePage({
     );
   };
 
-  // Upload Paper Submission (.pdf, .txt, .md, .tex) — Extracts in Browser first to bypass Vercel's 4.5MB Serverless limit
+  // Upload Paper Submission (.pdf, .txt, .md, .tex) — Extracts & renders pages in Browser (with OCR for scanned PDFs)
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     setUploading(true);
+    setUploadProgressText("📄 Opening file...");
     setUploadError(null);
 
     try {
-      // Step 1: Extract PDF / Document text directly in the browser (works for any file size: 5MB, 25MB, 100MB+)
+      // Step 1: Extract PDF / Document text and visual page images directly in the browser (works for any size & scanned PDFs)
       let browserExtracted: Awaited<ReturnType<typeof extractDocumentInBrowser>> | null = null;
       try {
-        browserExtracted = await extractDocumentInBrowser(file, projectId);
+        browserExtracted = await extractDocumentInBrowser(file, projectId, (status) => {
+          setUploadProgressText(status);
+        });
       } catch (clientErr) {
         console.warn("Browser PDF extraction fallback:", clientErr);
       }
 
-      if (
-        browserExtracted &&
-        browserExtracted.hasSelectableText &&
-        browserExtracted.extractedPages.length > 0
-      ) {
-        // Immediately register full pages & chunks on the client so the reader and AI have 100% of the document
+      if (browserExtracted && browserExtracted.pages.length > 0) {
+        // Save local PDF Blob URL so the user can view the original visual PDF in the reader
+        if (file.name.toLowerCase().endsWith(".pdf") && typeof URL !== "undefined") {
+          try {
+            const objUrl = URL.createObjectURL(file);
+            setPdfObjectUrls((prev) => ({
+              ...prev,
+              [browserExtracted.paper.id]: objUrl,
+            }));
+          } catch {
+            // ignore URL error
+          }
+        }
+
+        // Immediately register full pages (with visual page images!) & chunks on the client
         registerNewPaperData(
           browserExtracted.paper,
           browserExtracted.pages,
@@ -658,6 +688,7 @@ export default function ProjectWorkspacePage({
 
       // Step 2: If file is under 3.8MB (safe for Vercel Serverless), try server binary extraction (pdf-parse fallback)
       if (file.size < 3.8 * 1024 * 1024) {
+        setUploadProgressText("📄 Extracting pages on server...");
         const formData = new FormData();
         formData.append("file", file);
         formData.append("projectId", projectId);
@@ -678,45 +709,14 @@ export default function ProjectWorkspacePage({
         }
       }
 
-      // Step 3: If PDF is a large scanned image-only file without selectable text, synthesize structured study pages from its title
-      const cleanDocTitle =
-        browserExtracted?.paper.title ||
-        file.name
-          .replace(/\.[^/.]+$/, "")
-          .replace(/[_-]+/g, " ")
-          .trim() ||
-        project?.title ||
-        "Uploaded Study Material";
-
-      const fallbackRes = await fetch("/api/papers", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          projectId,
-          topic: `${cleanDocTitle} (${project?.title || "Academic Study"})`,
-          title: cleanDocTitle,
-        }),
-      });
-      const fallbackData = await safeJsonResponse<{
-        paper?: AcademicPaper;
-        pages?: DocumentPage[];
-        chunks?: DocumentChunk[];
-        error?: string;
-      }>(fallbackRes);
-      if (!fallbackRes.ok) {
-        throw new Error(fallbackData.error || "Upload failed");
-      }
-      if (fallbackData.paper) {
-        registerNewPaperData(
-          fallbackData.paper,
-          fallbackData.pages || [],
-          fallbackData.chunks || []
-        );
-      }
+      throw new Error(
+        "Could not extract pages from this file. Please make sure it is a valid .pdf, .txt, or .md file."
+      );
     } catch (err: unknown) {
       setUploadError(err instanceof Error ? err.message : "Upload error");
     } finally {
       setUploading(false);
+      setUploadProgressText("Reading File...");
       e.target.value = "";
     }
   };
@@ -928,7 +928,7 @@ export default function ProjectWorkspacePage({
 
               <label className="inline-flex items-center gap-1.5 rounded-lg border-2 border-[var(--accent-sage-dark)] bg-[var(--accent-sage-dark)] px-3.5 py-1.5 text-xs font-bold text-white shadow-xs transition hover:bg-[var(--accent-sage)] cursor-pointer">
                 <Upload className="h-3.5 w-3.5" />
-                <span>{uploading ? "Reading File..." : "+ Upload PDF / File"}</span>
+                <span>{uploading ? uploadProgressText : "+ Upload PDF / File"}</span>
                 <input
                   type="file"
                   accept=".pdf,.txt,.md,.tex"
@@ -1118,8 +1118,47 @@ export default function ProjectWorkspacePage({
                   </select>
                 </div>
 
-                {/* Page Navigation Controls */}
-                <div className="flex items-center gap-2 font-mono-provenance text-xs">
+                {/* Page Navigation & View Mode Controls */}
+                <div className="flex flex-wrap items-center gap-2 font-mono-provenance text-xs">
+                  {(activePage?.image_url ||
+                    (selectedPaper && pdfObjectUrls[selectedPaper.id])) && (
+                    <div className="flex items-center rounded border border-[var(--border-paper-strong)] bg-white p-0.5 text-[10px]">
+                      <button
+                        type="button"
+                        onClick={() => setReaderViewMode("both")}
+                        className={`rounded px-2 py-0.5 font-bold transition cursor-pointer ${
+                          readerViewMode === "both"
+                            ? "bg-[var(--accent-sage-dark)] text-white"
+                            : "text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
+                        }`}
+                      >
+                        📄 Page + Text
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setReaderViewMode("visual")}
+                        className={`rounded px-2 py-0.5 font-bold transition cursor-pointer ${
+                          readerViewMode === "visual"
+                            ? "bg-[var(--accent-sage-dark)] text-white"
+                            : "text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
+                        }`}
+                      >
+                        🖼️ PDF View
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setReaderViewMode("text")}
+                        className={`rounded px-2 py-0.5 font-bold transition cursor-pointer ${
+                          readerViewMode === "text"
+                            ? "bg-[var(--accent-sage-dark)] text-white"
+                            : "text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
+                        }`}
+                      >
+                        📝 Text Only
+                      </button>
+                    </div>
+                  )}
+
                   <button
                     onClick={() => setCurrentPageNum((p) => Math.max(1, p - 1))}
                     disabled={currentPageNum <= 1}
@@ -1161,27 +1200,63 @@ export default function ProjectWorkspacePage({
                     </p>
                   </div>
 
-                  {/* Render Page Content with Passage Highlight */}
-                  <div className="prose max-w-none text-[var(--ink-secondary)]">
-                    {highlightedText && activePage?.text_content.includes(highlightedText) ? (
-                      <div className="whitespace-pre-wrap">
-                        {activePage.text_content.split(highlightedText).map((part, i, arr) => (
-                          <span key={i}>
-                            {part}
-                            {i < arr.length - 1 && (
-                              <mark className="rounded px-1.5 py-0.5 citation-target-highlight font-semibold text-[var(--ink-primary)]">
-                                {highlightedText}
-                              </mark>
-                            )}
-                          </span>
-                        ))}
+                  {/* Real Visual PDF Page Rendering (Canvas Snapshot or Native PDF Embed) */}
+                  {readerViewMode !== "text" && activePage?.image_url && (
+                    <div className="rounded-xl border border-[var(--border-paper-strong)] bg-zinc-50 p-3 shadow-xs">
+                      <div className="mb-2 flex items-center justify-between font-mono-provenance text-[10px] text-[var(--ink-muted)]">
+                        <span>ORIGINAL PDF PAGE {currentPageNum}</span>
+                        <span>Visual Page Render</span>
                       </div>
-                    ) : (
-                      <p className="whitespace-pre-wrap">
-                        {activePage?.text_content || "Loading paper text..."}
-                      </p>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={activePage.image_url}
+                        alt={`Page ${currentPageNum} of ${selectedPaper?.title || "PDF"}`}
+                        className="mx-auto w-full max-w-full rounded border border-[var(--border-paper)] bg-white shadow-2xs"
+                      />
+                    </div>
+                  )}
+
+                  {readerViewMode === "visual" &&
+                    !activePage?.image_url &&
+                    selectedPaper &&
+                    pdfObjectUrls[selectedPaper.id] && (
+                      <div className="rounded-xl border border-[var(--border-paper-strong)] bg-zinc-50 p-2 shadow-xs h-[620px]">
+                        <iframe
+                          src={`${pdfObjectUrls[selectedPaper.id]}#page=${currentPageNum}`}
+                          title={selectedPaper.title}
+                          className="w-full h-full rounded border border-[var(--border-paper)] bg-white"
+                        />
+                      </div>
                     )}
-                  </div>
+
+                  {/* Render Page Content with Passage Highlight */}
+                  {(readerViewMode !== "visual" || !activePage?.image_url) && (
+                    <div className="prose max-w-none text-[var(--ink-secondary)]">
+                      {activePage?.image_url && (
+                        <div className="mb-2 font-mono-provenance text-[10px] font-bold uppercase text-[var(--accent-sage-dark)]">
+                          Extracted / OCR Text (Page {currentPageNum}):
+                        </div>
+                      )}
+                      {highlightedText && activePage?.text_content.includes(highlightedText) ? (
+                        <div className="whitespace-pre-wrap">
+                          {activePage.text_content.split(highlightedText).map((part, i, arr) => (
+                            <span key={i}>
+                              {part}
+                              {i < arr.length - 1 && (
+                                <mark className="rounded px-1.5 py-0.5 citation-target-highlight font-semibold text-[var(--ink-primary)]">
+                                  {highlightedText}
+                                </mark>
+                              )}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="whitespace-pre-wrap">
+                          {activePage?.text_content || "Loading paper text..."}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1190,7 +1265,9 @@ export default function ProjectWorkspacePage({
                 <div className="flex items-center gap-2">
                   <CheckCircle className="h-3.5 w-3.5 text-[var(--accent-sage)]" />
                   <span>
-                    Showing Real Extracted Text from Page {currentPageNum}
+                    {activePage?.image_url
+                      ? `Showing Real PDF Page ${currentPageNum} + Extracted Text`
+                      : `Showing Real Extracted Text from Page ${currentPageNum}`}
                   </span>
                 </div>
                 {highlightedText && (

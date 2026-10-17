@@ -21,7 +21,7 @@ export function isRawPDFBinaryGarbageClient(str: string): boolean {
  */
 export function splitTextToPagesClient(
   rawText: string
-): { page_number: number; text: string }[] {
+): { page_number: number; text: string; image_url?: string }[] {
   const explicitBreaks = rawText.split(
     /\n\s*---\s*\n|\n(?=## Page \d+)|\n(?=Page \d+:)/
   );
@@ -102,7 +102,9 @@ export function extractMetadataClient(
     pdfInfoTitle &&
     pdfInfoTitle.length > 4 &&
     !pdfInfoTitle.toLowerCase().endsWith(".pdf") &&
-    !pdfInfoTitle.toLowerCase().endsWith(".docx")
+    !pdfInfoTitle.toLowerCase().endsWith(".docx") &&
+    !pdfInfoTitle.toLowerCase().startsWith("microsoft word") &&
+    !pdfInfoTitle.toLowerCase().startsWith("powerpoint")
       ? pdfInfoTitle
       : cleanFileName;
 
@@ -252,12 +254,13 @@ export function chunkPagesClient(
 }
 
 /**
- * Extracts text pages, metadata, and chunks from a File (.pdf, .txt, .md, .tex) directly in the browser.
- * This completely bypasses Vercel's 4.5 MB Serverless request body limit for large PDFs.
+ * Extracts text pages, visual page images, metadata, and chunks from a File (.pdf, .txt, .md, .tex) directly in the browser.
+ * Supports BOTH digital text PDFs and scanned image-only PDFs (via Gemini Vision OCR + Tesseract.js browser OCR fallback).
  */
 export async function extractDocumentInBrowser(
   file: File,
-  projectId: string
+  projectId: string,
+  onProgress?: (status: string) => void
 ): Promise<{
   paper: AcademicPaper;
   pages: DocumentPage[];
@@ -271,14 +274,15 @@ export async function extractDocumentInBrowser(
   const isPDF = fileNameLower.endsWith(".pdf");
   const paperId = `paper_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
 
-  let extractedPages: { page_number: number; text: string }[] = [];
+  let rawPages: { page_number: number; text: string; image_url?: string }[] = [];
   let pdfInfoTitle: string | undefined;
   let pdfInfoAuthor: string | undefined;
   let hasSelectableText = false;
 
   if (isPDF) {
+    onProgress?.("📄 Opening PDF in browser...");
     const arrayBuffer = await file.arrayBuffer();
-    const { extractText, getMeta } = await import("unpdf");
+    const { getDocumentProxy, getMeta } = await import("unpdf");
 
     try {
       const meta = await getMeta(new Uint8Array(arrayBuffer.slice(0)));
@@ -293,27 +297,167 @@ export async function extractDocumentInBrowser(
       // Metadata dictionary is optional
     }
 
-    const extracted = await extractText(new Uint8Array(arrayBuffer.slice(0)), {
-      mergePages: false,
-    });
+    const pdf = await getDocumentProxy(new Uint8Array(arrayBuffer.slice(0)));
+    const totalPages = pdf.numPages || 1;
+    let totalExtractedChars = 0;
 
-    if (extracted && Array.isArray(extracted.text) && extracted.text.length > 0) {
-      extractedPages = extracted.text
-        .map((pageText: string, idx: number) => ({
-          page_number: idx + 1,
-          text: (pageText || "").trim(),
-        }))
-        .filter((p) => p.text.length > 0 && !isRawPDFBinaryGarbageClient(p.text));
+    for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+      onProgress?.(`📄 Reading PDF page ${pageNum} of ${totalPages}...`);
+      const page = await pdf.getPage(pageNum);
+
+      // 1. Extract embedded text layer if present
+      let pageText = "";
+      try {
+        const textContent = await page.getTextContent();
+        pageText = (textContent.items || [])
+          .map((item) => {
+            if ("str" in item && typeof item.str === "string") {
+              const eol = "hasEOL" in item && item.hasEOL ? "\n" : " ";
+              return item.str + eol;
+            }
+            return "";
+          })
+          .join("")
+          .replace(/[ \t]+/g, " ")
+          .replace(/ ?\n ?/g, "\n")
+          .trim();
+        if (isRawPDFBinaryGarbageClient(pageText)) {
+          pageText = "";
+        }
+      } catch {
+        pageText = "";
+      }
+
+      totalExtractedChars += pageText.length;
+
+      // 2. Render visual PDF page onto canvas in browser (up to 35 pages) so the user always sees their REAL PDF
+      let pageImageUrl: string | undefined;
+      if (typeof document !== "undefined" && pageNum <= 35) {
+        try {
+          const viewport = page.getViewport({ scale: 1.25 });
+          const canvas = document.createElement("canvas");
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          const ctx = canvas.getContext("2d");
+          if (ctx) {
+            await page.render({
+              canvas,
+              canvasContext: ctx,
+              viewport,
+            }).promise;
+            pageImageUrl = canvas.toDataURL("image/jpeg", 0.68);
+          }
+        } catch (renderErr) {
+          console.warn(`Canvas render skipped for page ${pageNum}:`, renderErr);
+        }
+      }
+
+      rawPages.push({
+        page_number: pageNum,
+        text: pageText,
+        image_url: pageImageUrl,
+      });
     }
 
-    hasSelectableText = extractedPages.length > 0;
+    const avgCharsPerPage = totalPages > 0 ? totalExtractedChars / totalPages : 0;
+    hasSelectableText = totalExtractedChars >= 40 && avgCharsPerPage >= 15;
+
+    // 3. If this is a SCANNED PDF (pages are images with little or no selectable text), run OCR on the rendered page images!
+    if (!hasSelectableText && rawPages.some((p) => Boolean(p.image_url))) {
+      const pagesNeedingOcr = rawPages
+        .filter((p) => p.text.length < 25 && Boolean(p.image_url))
+        .slice(0, 12);
+
+      // 3A. First try fast Gemini Vision OCR via /api/papers if an API key is configured
+      try {
+        onProgress?.("🔍 Scanned PDF detected — running AI Vision OCR...");
+        const userStoredKey =
+          typeof window !== "undefined" ? localStorage.getItem("sourcewise_gemini_key") : null;
+        const ocrRes = await fetch("/api/papers", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "ocr_pages",
+            apiKey: userStoredKey || undefined,
+            scannedPages: pagesNeedingOcr.slice(0, 8).map((p) => ({
+              page_number: p.page_number,
+              dataUrl: p.image_url,
+            })),
+          }),
+        });
+        if (ocrRes.ok) {
+          const ocrData = await ocrRes.json();
+          if (Array.isArray(ocrData.ocrPages) && ocrData.ocrPages.length > 0) {
+            for (const item of ocrData.ocrPages) {
+              const target = rawPages.find((rp) => rp.page_number === item.page_number);
+              if (target && item.text && item.text.trim().length > 10) {
+                target.text = item.text.trim();
+              }
+            }
+          }
+        }
+      } catch {
+        // Proceed to browser Tesseract OCR fallback
+      }
+
+      // 3B. Browser Tesseract.js OCR fallback for any scanned pages still needing text
+      const stillEmptyPages = rawPages
+        .filter((p) => p.text.length < 25 && Boolean(p.image_url))
+        .slice(0, 10);
+
+      if (stillEmptyPages.length > 0 && typeof window !== "undefined") {
+        try {
+          const Tesseract = await import("tesseract.js");
+          const createWorker =
+            Tesseract.createWorker ||
+            (Tesseract as unknown as { default?: { createWorker?: typeof Tesseract.createWorker } })
+              .default?.createWorker;
+          if (createWorker) {
+            onProgress?.("🔍 Loading OCR engine for scanned PDF...");
+            const worker = await createWorker("ind+eng");
+            for (let idx = 0; idx < stillEmptyPages.length; idx++) {
+              const targetPage = stillEmptyPages[idx];
+              onProgress?.(
+                `🔍 Reading scanned page ${targetPage.page_number} (${idx + 1}/${stillEmptyPages.length})...`
+              );
+              if (targetPage.image_url) {
+                const {
+                  data: { text },
+                } = await worker.recognize(targetPage.image_url);
+                const cleanedOcr = (text || "")
+                  .replace(/[ \t]+/g, " ")
+                  .replace(/\n{3,}/g, "\n\n")
+                  .trim();
+                if (cleanedOcr.length > 10) {
+                  targetPage.text = cleanedOcr;
+                }
+              }
+            }
+            await worker.terminate();
+          }
+        } catch (tessErr) {
+          console.warn("Browser Tesseract OCR fallback encountered error:", tessErr);
+        }
+      }
+
+      hasSelectableText = rawPages.some((p) => p.text.trim().length > 15);
+    }
+
+    // Ensure every physical page of the PDF is preserved in the reader even if a page is a diagram or cover image
+    rawPages = rawPages.map((p) => ({
+      ...p,
+      text:
+        p.text.trim().length > 0
+          ? p.text.trim()
+          : `[Visual Page ${p.page_number} from "${file.name.replace(/\.[^/.]+$/, "")}"]`,
+    }));
   } else {
     const rawText = await file.text();
-    extractedPages = splitTextToPagesClient(rawText);
-    hasSelectableText = extractedPages.length > 0;
+    rawPages = splitTextToPagesClient(rawText);
+    hasSelectableText = rawPages.length > 0;
   }
 
-  const fullTextSample = extractedPages
+  const fullTextSample = rawPages
     .slice(0, 3)
     .map((p) => p.text)
     .join("\n\n")
@@ -326,19 +470,22 @@ export async function extractDocumentInBrowser(
     pdfInfoAuthor
   );
 
-  const pages: DocumentPage[] = extractedPages.map((p) => ({
+  const pages: DocumentPage[] = rawPages.map((p) => ({
     id: `page_${paperId}_${p.page_number}`,
     document_id: paperId,
     page_number: p.page_number,
     char_count: p.text.length,
     text_content: p.text,
+    image_url: p.image_url,
     created_at: new Date().toISOString(),
   }));
 
-  const chunks = chunkPagesClient(
-    paperId,
-    pages.map((p) => ({ page_number: p.page_number, text: p.text_content }))
-  );
+  const extractedPages = pages.map((p) => ({
+    page_number: p.page_number,
+    text: p.text_content,
+  }));
+
+  const chunks = chunkPagesClient(paperId, extractedPages);
 
   const paper: AcademicPaper = {
     id: paperId,
@@ -366,6 +513,6 @@ export async function extractDocumentInBrowser(
     extractedPages,
     pdfInfoTitle,
     pdfInfoAuthor,
-    hasSelectableText,
+    hasSelectableText: pages.length > 0,
   };
 }

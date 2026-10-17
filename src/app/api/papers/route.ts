@@ -23,10 +23,13 @@ export async function POST(req: NextRequest) {
   try {
     const contentType = req.headers.get("content-type") || "";
 
-    // 1. Handling JSON Request (Client-Extracted PDF Pages OR Topic Ingestion / Text Paste)
+    // 1. Handling JSON Request (OCR Scanned Pages, Client-Extracted PDF Pages, OR Topic Ingestion)
     if (contentType.includes("application/json")) {
       const body = await req.json();
       const {
+        action,
+        scannedPages,
+        apiKey: clientApiKey,
         paperId: clientPaperId,
         extractedPages,
         fileName,
@@ -40,6 +43,56 @@ export async function POST(req: NextRequest) {
         content,
         projectId,
       } = body;
+
+      // 1.0 Multimodal Gemini Vision OCR for Scanned PDF Pages
+      if (action === "ocr_pages" && Array.isArray(scannedPages) && scannedPages.length > 0) {
+        const activeApiKey = (clientApiKey || process.env.GEMINI_API_KEY || "").trim();
+        if (!activeApiKey) {
+          return NextResponse.json({ ocrPages: [] }, { status: 200 });
+        }
+        try {
+          const { GoogleGenAI } = await import("@google/genai");
+          const ai = new GoogleGenAI({ apiKey: activeApiKey });
+          const ocrResults: { page_number: number; text: string }[] = [];
+
+          for (const sp of scannedPages.slice(0, 8)) {
+            const dataUrl = String(sp.dataUrl || "");
+            const base64Data = dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
+            if (!base64Data) continue;
+
+            const resp = await ai.models.generateContent({
+              model: "gemini-2.5-flash",
+              contents: [
+                {
+                  role: "user",
+                  parts: [
+                    {
+                      inlineData: {
+                        mimeType: "image/jpeg",
+                        data: base64Data,
+                      },
+                    },
+                    {
+                      text: "Transcribe all visible text on this document page accurately in its original language (preserving headings, numbered lists, and paragraphs). Output ONLY the transcribed text from the page without any commentary or markdown code fences.",
+                    },
+                  ],
+                },
+              ],
+            });
+            const pageText = (resp.text || "").trim();
+            if (pageText.length > 0) {
+              ocrResults.push({
+                page_number: Number(sp.page_number) || 1,
+                text: pageText,
+              });
+            }
+          }
+          return NextResponse.json({ ocrPages: ocrResults }, { status: 200 });
+        } catch (ocrErr) {
+          console.warn("Gemini Vision OCR error:", ocrErr);
+          return NextResponse.json({ ocrPages: [] }, { status: 200 });
+        }
+      }
 
       const pid = projectId || "proj_pedagogy_ai";
       const paperId =
