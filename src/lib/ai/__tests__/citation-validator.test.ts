@@ -167,4 +167,97 @@ describe("Strict Citation Validator", () => {
     expect(res.thinking).toContain("Understanding Your Question");
     expect(res.citations.length).toBeGreaterThan(0);
   });
+
+  it("cleans scanned OCR gibberish, restores multi-line outline structure, and answers in Indonesian when asked in Indonesian", async () => {
+    const { queryResearchAssistant, cleanChunkForDisplay, detectQueryLanguage } = await import(
+      "../gemini"
+    );
+
+    const noisyOcrExcerpt1 =
+      "| SEJARAH POLITIK HUKUM ADAT (Prof. Imam Sudiyat, S.H.) 1. Masa KOMPENI (VOC) (1596-1808) a. Pengusaha ngiras penguasa VOC bermuka dua 1) Sebagai PENGUSAHA. Khususnya sebagai pedagang. 2) BADAN PEMERINTAH, dengan hak mengatur susunan rumah tangga beserta pengurusnya sendiri. Sifat pertamalah yang terutama menentukan sikapnya terhadap Hukum Adat.";
+    const noisyOcrExcerpt2 =
+      'Pagan Meskipun demikian demi ketertiban dan keamanan bagi b. CHARTER tahun 1804 ot dam er OT ST a as amon a i So en STS TET oy Ba a fl OGURIER), | Compscten. YAK Pasal tersebut menyebutkan sebagai berikut. merupakan Penyin Dan gah gtd iss VOC ton cP "Susunan pengacian Untuk golongan Bui Putera akan tetap © Penilaian terhadap Hukum Adat diserahkan kepada kebutuhan kolonial.';
+
+    const cleaned1 = cleanChunkForDisplay(noisyOcrExcerpt1);
+    const cleaned2 = cleanChunkForDisplay(noisyOcrExcerpt2);
+
+    // Must strip leading pipe and restore outline newlines (1., a., 1), 2))
+    expect(cleaned1.startsWith("|")).toBe(false);
+    expect(cleaned1).toContain("\n1. Masa KOMPENI");
+    expect(cleaned1).toContain("\na. Pengusaha ngiras penguasa");
+    expect(cleaned1).toContain("\n1) Sebagai PENGUSAHA");
+    expect(cleaned1).toContain("\n2) BADAN PEMERINTAH");
+
+    // Must strip OCR gibberish run and fix common OCR typos
+    expect(cleaned2).not.toContain("ot dam er OT ST");
+    expect(cleaned2).not.toContain("©");
+    expect(cleaned2).toContain("pengadilan");
+    expect(cleaned2).toContain("Bumi Putera");
+
+    // Language detection must distinguish Indonesian vs English
+    expect(detectQueryLanguage("Apa saja yang diajarkan di pdf ini?")).toBe("id");
+    expect(detectQueryLanguage("What are the main things taught in this pdf?")).toBe("en");
+
+    const hukumAdatPaper = {
+      id: "paper_adat_1",
+      project_id: "proj_adat",
+      user_id: "usr_1",
+      title: "5 SEJARAH POLITIK HUKUM ADAT",
+      authors: ["Prof. Imam Sudiyat, S.H."],
+      publication_year: 2020,
+      journal_or_venue: null,
+      doi: null,
+      file_path: "/uploads/5 SEJARAH POLITIK HUKUM ADAT.pdf",
+      file_size_bytes: 500000,
+      file_hash: "hash_adat",
+      page_count: 2,
+      processing_status: "ready" as const,
+      error_message: null,
+      created_at: "2026-10-17T00:00:00Z",
+      updated_at: "2026-10-17T00:00:00Z",
+    };
+
+    const adatPages: DocumentPage[] = [
+      {
+        id: "pg_adat_1",
+        document_id: "paper_adat_1",
+        page_number: 1,
+        char_count: noisyOcrExcerpt1.length,
+        text_content: noisyOcrExcerpt1,
+        created_at: "2026-10-17T00:00:00Z",
+      },
+      {
+        id: "pg_adat_2",
+        document_id: "paper_adat_1",
+        page_number: 2,
+        char_count: noisyOcrExcerpt2.length,
+        text_content: noisyOcrExcerpt2,
+        created_at: "2026-10-17T00:00:00Z",
+      },
+    ];
+
+    const adatChunks: DocumentChunk[] = adatPages.map((pg, idx) => ({
+      id: `chk_adat_${idx}`,
+      document_id: "paper_adat_1",
+      page_number: pg.page_number,
+      chunk_index: idx,
+      content: pg.text_content,
+      token_count: 75,
+      created_at: "2026-10-17T00:00:00Z",
+    }));
+
+    const indoRes = await queryResearchAssistant({
+      question: "Jelaskan apa saja pokok bahasan di dokumen sejarah politik hukum adat ini?",
+      projectId: "proj_adat",
+      papers: [hukumAdatPaper],
+      chunks: adatChunks,
+      pages: adatPages,
+      selectedPaperId: "paper_adat_1",
+    });
+
+    expect(indoRes.content).toContain("Pokok Bahasan Utama:");
+    expect(indoRes.content).toContain("Bukti Halaman 1 (#1):");
+    expect(indoRes.content).not.toContain("menentukan si...");
+    expect(indoRes.thinking).toContain("Memahami Pertanyaan Anda");
+  });
 });

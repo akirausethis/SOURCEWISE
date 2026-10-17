@@ -41,6 +41,7 @@ import {
   ResearchNote,
 } from "@/types";
 import { extractDocumentInBrowser } from "@/lib/pdf/client-extractor";
+import { cleanChunkForDisplay, detectQueryLanguage } from "@/lib/ai/gemini";
 
 async function safeJsonResponse<T = Record<string, unknown>>(res: Response): Promise<T> {
   const rawText = await res.text();
@@ -88,6 +89,8 @@ export default function ProjectWorkspacePage({
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [inputQuestion, setInputQuestion] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
+  const [expandedEvidenceIds, setExpandedEvidenceIds] = useState<Record<string, boolean>>({});
+  const [expandedCitationIds, setExpandedCitationIds] = useState<Record<string, boolean>>({});
 
   // Comparison Matrix State
   const [comparison, setComparison] = useState<ComparisonMatrix | null>(null);
@@ -204,14 +207,24 @@ export default function ProjectWorkspacePage({
         localPapers = rawPapers.filter((p) => !corruptedDocIds.has(p.id));
         localPages = rawPages.filter((pg) => !corruptedDocIds.has(pg.document_id));
         localChunks = rawChunks.filter((c) => !corruptedDocIds.has(c.document_id));
-        localStorage.setItem("sourcewise_custom_papers", JSON.stringify(localPapers));
-        localStorage.setItem("sourcewise_custom_pages", JSON.stringify(localPages));
-        localStorage.setItem("sourcewise_custom_chunks", JSON.stringify(localChunks));
       } else {
         localPapers = rawPapers;
         localPages = rawPages;
         localChunks = rawChunks;
       }
+
+      // Also clean any OCR noise / squished outline lines on stored pages & chunks
+      localPages = localPages.map((pg) => ({
+        ...pg,
+        text_content: cleanChunkForDisplay(pg.text_content) || pg.text_content,
+      }));
+      localChunks = localChunks.map((chk) => ({
+        ...chk,
+        content: cleanChunkForDisplay(chk.content) || chk.content,
+      }));
+      localStorage.setItem("sourcewise_custom_papers", JSON.stringify(localPapers));
+      localStorage.setItem("sourcewise_custom_pages", JSON.stringify(localPages));
+      localStorage.setItem("sourcewise_custom_chunks", JSON.stringify(localChunks));
     } catch {
       // ignore storage parse errors
     }
@@ -517,12 +530,25 @@ export default function ProjectWorkspacePage({
     }
   };
 
-  // Formats AI answer text cleanly: strips raw ***/** stars, formats numbered items and section headers, and makes [1] badges clickable
-  const renderPrettyAnswerContent = (rawText: string, citations?: Citation[]) => {
+  // Formats AI answer text cleanly: strips raw ***/** stars, formats numbered/lettered items, and adds interactive Read More / Baca Selengkapnya toggles
+  const renderPrettyAnswerContent = (
+    rawText: string,
+    citations?: Citation[],
+    msgId = "msg",
+    isIndonesian = false
+  ) => {
     const cleanText = (rawText || "")
-      .replace(/\*{2,3}([^*]+)\*{2,3}/g, "$1")
+      .replace(/\*{1,3}([^*\n]+)\*{1,3}/g, "$1")
       .replace(/^#{1,6}\s+/gm, "")
       .trim();
+
+    const snapWordPreview = (text: string, maxChars = 280): { preview: string; isTruncated: boolean } => {
+      if (text.length <= maxChars) return { preview: text, isTruncated: false };
+      const sliced = text.slice(0, maxChars);
+      const lastSpace = sliced.lastIndexOf(" ");
+      const safeCut = lastSpace > maxChars * 0.6 ? sliced.slice(0, lastSpace) : sliced;
+      return { preview: `${safeCut.replace(/[,.;:]+$/, "")}…`, isTruncated: true };
+    };
 
     const renderInlineWithCitations = (lineText: string) => {
       const parts = lineText.split(/(\[\d+\])/g);
@@ -538,9 +564,9 @@ export default function ProjectWorkspacePage({
                 type="button"
                 onClick={() => handleCitationClick(targetCit)}
                 className="inline-flex items-center gap-0.5 mx-0.5 rounded bg-amber-100 border border-amber-300 px-1.5 py-0.2 font-mono-provenance text-[10px] font-bold text-amber-900 hover:bg-amber-200 transition cursor-pointer"
-                title={`Jump to Page ${targetCit.page_number}`}
+                title={isIndonesian ? `Buka Halaman ${targetCit.page_number}` : `Jump to Page ${targetCit.page_number}`}
               >
-                [{match[1]} • p.{targetCit.page_number}]
+                [{match[1]} • {isIndonesian ? "Hal." : "p."}{targetCit.page_number}]
               </button>
             );
           }
@@ -549,36 +575,157 @@ export default function ProjectWorkspacePage({
       });
     };
 
+    const renderStructuredLine = (line: string, lIdx: number) => {
+      const mainNumberMatch = line.match(/^(\d+)\.\s+(.*)$/);
+      const subLetterMatch = line.match(/^([a-z])\.\s+(.*)$/);
+      const subParenMatch = line.match(/^(\d+)\)\s+(.*)$/);
+
+      if (mainNumberMatch) {
+        return (
+          <div key={lIdx} className="flex items-start gap-2 pt-1 font-semibold text-[var(--ink-primary)]">
+            <span className="inline-flex h-4 min-w-[16px] px-1 shrink-0 items-center justify-center rounded bg-[var(--accent-sage-dark)] text-[10px] font-bold text-white font-mono-provenance mt-0.5">
+              {mainNumberMatch[1]}.
+            </span>
+            <span className="flex-1 leading-relaxed">{renderInlineWithCitations(mainNumberMatch[2])}</span>
+          </div>
+        );
+      }
+
+      if (subLetterMatch) {
+        return (
+          <div key={lIdx} className="flex items-start gap-2 pl-3 pt-0.5 text-[var(--ink-primary)]">
+            <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded bg-amber-100 border border-amber-300 text-[10px] font-bold text-amber-900 font-mono-provenance mt-0.5">
+              {subLetterMatch[1]}.
+            </span>
+            <span className="flex-1 font-medium leading-relaxed">
+              {renderInlineWithCitations(subLetterMatch[2])}
+            </span>
+          </div>
+        );
+      }
+
+      if (subParenMatch) {
+        return (
+          <div key={lIdx} className="flex items-start gap-2 pl-6 text-[var(--ink-secondary)]">
+            <span className="font-mono-provenance text-[10px] font-bold text-[var(--accent-sage-dark)] shrink-0 mt-0.5">
+              {subParenMatch[1]})
+            </span>
+            <span className="flex-1 leading-relaxed">{renderInlineWithCitations(subParenMatch[2])}</span>
+          </div>
+        );
+      }
+
+      return (
+        <p key={lIdx} className="text-[var(--ink-secondary)] leading-relaxed">
+          {renderInlineWithCitations(line)}
+        </p>
+      );
+    };
+
     const blocks = cleanText.split(/\n\s*\n/).filter((b) => b.trim().length > 0);
 
     return (
-      <div className="space-y-3 text-xs leading-relaxed text-[var(--ink-primary)]">
+      <div className="space-y-3.5 text-xs leading-relaxed text-[var(--ink-primary)]">
         {blocks.map((block, bIdx) => {
-          const lines = block.split(/\n/).map((l) => l.trim()).filter(Boolean);
+          const rawLines = block.split(/\n/).map((l) => l.trim()).filter(Boolean);
 
-          // Check if block is a "Key Evidence #X (Page Y):" block
-          if (lines.length >= 2 && /^Key Evidence #\d+/i.test(lines[0])) {
+          // Check if block is a "Key Evidence #X" or "Bukti Halaman X (#Y)" card
+          if (
+            rawLines.length >= 2 &&
+            /^(Key Evidence\s+#?\d+|Bukti Halaman\s+#?\d+)/i.test(rawLines[0])
+          ) {
+            const cardKey = `${msgId}_ev_${bIdx}`;
+            const isExpanded = Boolean(expandedEvidenceIds[cardKey]);
+
+            // Clean OCR noise and restore multi-line outline structure (1., a., 1), 2))
+            const cleanedBody = cleanChunkForDisplay(rawLines.slice(1).join("\n"));
+            const structuredLines = cleanedBody
+              .split(/\n/)
+              .map((l) => l.trim())
+              .filter(Boolean);
+
+            const totalChars = structuredLines.join(" ").length;
+            const needsCollapse = structuredLines.length > 4 || totalChars > 300;
+
+            let visibleLines = structuredLines;
+            if (needsCollapse && !isExpanded) {
+              if (structuredLines.length > 4) {
+                visibleLines = structuredLines.slice(0, 4);
+              } else {
+                const { preview } = snapWordPreview(structuredLines.join(" "), 280);
+                visibleLines = [preview];
+              }
+            }
+
             return (
               <div
                 key={bIdx}
-                className="rounded-lg border border-[var(--border-paper-strong)] bg-[var(--surface-paper)] p-3 space-y-1"
+                className="rounded-xl border border-[var(--border-paper-strong)] bg-[var(--surface-paper)] p-3.5 space-y-2 shadow-2xs"
               >
-                <div className="font-mono-provenance text-[10px] font-bold uppercase text-[var(--accent-sage-dark)]">
-                  {lines[0]}
+                <div className="flex items-center justify-between gap-2 border-b border-[var(--border-paper)] pb-1.5">
+                  <span className="font-mono-provenance text-[10px] font-bold uppercase tracking-wide text-[var(--accent-sage-dark)]">
+                    📄 {rawLines[0]}
+                  </span>
+                  {needsCollapse && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedEvidenceIds((prev) => ({
+                          ...prev,
+                          [cardKey]: !prev[cardKey],
+                        }))
+                      }
+                      className="font-mono-provenance text-[10px] font-bold text-[var(--accent-sage-dark)] hover:underline cursor-pointer"
+                    >
+                      {isExpanded
+                        ? isIndonesian
+                          ? "🔼 Sembunyikan"
+                          : "🔼 Show Less"
+                        : isIndonesian
+                          ? "📖 Baca Selengkapnya"
+                          : "📖 Read More"}
+                    </button>
+                  )}
                 </div>
-                <div className="text-[var(--ink-secondary)]">
-                  {renderInlineWithCitations(lines.slice(1).join(" "))}
+
+                <div className="space-y-1.5">
+                  {visibleLines.map((line, lIdx) => renderStructuredLine(line, lIdx))}
                 </div>
+
+                {needsCollapse && (
+                  <div className="pt-1">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedEvidenceIds((prev) => ({
+                          ...prev,
+                          [cardKey]: !prev[cardKey],
+                        }))
+                      }
+                      className="inline-flex items-center gap-1 rounded-md border border-[var(--accent-sage-border)] bg-white px-2.5 py-1 font-mono-provenance text-[10px] font-bold text-[var(--accent-sage-dark)] hover:bg-[var(--accent-sage-light)]/50 transition cursor-pointer"
+                    >
+                      {isExpanded
+                        ? isIndonesian
+                          ? "🔼 Ringkas Tampilan"
+                          : "🔼 Collapse Passage"
+                        : isIndonesian
+                          ? "📖 Baca Selengkapnya (Tampilkan Teks Utuh)"
+                          : "📖 Read Full Passage"}
+                    </button>
+                  </div>
+                )}
               </div>
             );
           }
 
           return (
             <div key={bIdx} className="space-y-1.5">
-              {lines.map((line, lIdx) => {
+              {rawLines.map((line, lIdx) => {
                 const isSectionHeader =
-                  /^(Core Topics Covered|Page-by-Page Breakdown|Main Ideas|Summary):$/i.test(line) ||
-                  (line.endsWith(":") && line.length < 60 && lIdx === 0);
+                  /^(Core Topics Covered|Page-by-Page Breakdown|Main Ideas|Summary|Topik Utama yang Dibahas|Rincian Materi Berdasarkan Halaman|Intisari|Ringkasan):$/i.test(
+                    line
+                  ) ||
+                  (line.endsWith(":") && line.length < 68 && lIdx === 0);
                 const numberedMatch = line.match(/^(\d+)\.\s+(.*)$/);
 
                 if (isSectionHeader) {
@@ -601,7 +748,7 @@ export default function ProjectWorkspacePage({
                       <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[var(--accent-sage-dark)] text-[10px] font-bold text-white font-mono-provenance mt-0.5">
                         {numberedMatch[1]}
                       </span>
-                      <span className="flex-1 text-[var(--ink-primary)] font-medium">
+                      <span className="flex-1 text-[var(--ink-primary)] font-medium leading-relaxed">
                         {renderInlineWithCitations(numberedMatch[2])}
                       </span>
                     </div>
@@ -609,7 +756,7 @@ export default function ProjectWorkspacePage({
                 }
 
                 return (
-                  <p key={lIdx} className="text-[var(--ink-primary)]">
+                  <p key={lIdx} className="text-[var(--ink-primary)] leading-relaxed">
                     {renderInlineWithCitations(line)}
                   </p>
                 );
@@ -1317,145 +1464,219 @@ export default function ProjectWorkspacePage({
                         onClick={(e) =>
                           handleSendMessage(
                             e,
+                            `Apa saja materi atau poin utama yang dijelaskan dalam "${selectedPaper?.title || "dokumen ini"}"?`
+                          )
+                        }
+                        className="rounded-lg border border-[var(--border-paper-strong)] bg-white p-2.5 text-left font-medium text-[var(--ink-primary)] hover:border-[var(--accent-sage-dark)] hover:bg-[var(--accent-sage-light)]/30 transition cursor-pointer"
+                      >
+                        🇮🇩 &ldquo;Apa saja materi utama yang dijelaskan di dokumen ini?&rdquo;
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) =>
+                          handleSendMessage(
+                            e,
                             `Explain the main idea of "${selectedPaper?.title || "this paper"}" in simple words.`
                           )
                         }
                         className="rounded-lg border border-[var(--border-paper-strong)] bg-white p-2.5 text-left font-medium text-[var(--ink-primary)] hover:border-[var(--accent-sage-dark)] hover:bg-[var(--accent-sage-light)]/30 transition cursor-pointer"
                       >
-                        💬 &ldquo;Explain the main idea of this paper in simple words.&rdquo;
+                        🇬🇧 &ldquo;Explain the main idea of this paper in simple words.&rdquo;
                       </button>
                       <button
                         type="button"
                         onClick={(e) =>
                           handleSendMessage(
                             e,
-                            `What methods or experiments did they use in "${selectedPaper?.title || "this paper"}", and what were the results?`
+                            `Jelaskan secara ringkas isi tiap halaman dari "${selectedPaper?.title || "dokumen ini"}".`
                           )
                         }
                         className="rounded-lg border border-[var(--border-paper-strong)] bg-white p-2.5 text-left font-medium text-[var(--ink-primary)] hover:border-[var(--accent-sage-dark)] hover:bg-[var(--accent-sage-light)]/30 transition cursor-pointer"
                       >
-                        💬 &ldquo;What methods did they use and what were the results?&rdquo;
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) =>
-                          handleSendMessage(
-                            e,
-                            "What are the main limitations, weaknesses, or unsolved problems mentioned in the papers?"
-                          )
-                        }
-                        className="rounded-lg border border-[var(--border-paper-strong)] bg-white p-2.5 text-left font-medium text-[var(--ink-primary)] hover:border-[var(--accent-sage-dark)] hover:bg-[var(--accent-sage-light)]/30 transition cursor-pointer"
-                      >
-                        💬 &ldquo;What are the weaknesses or unsolved problems mentioned?&rdquo;
+                        🇮🇩 &ldquo;Jelaskan secara ringkas isi tiap halaman dokumen ini.&rdquo;
                       </button>
                     </div>
                   </div>
                 ) : (
-                  chatMessages.map((msg) => (
-                    <div
-                      key={msg.id}
-                      className={`rounded-xl p-3.5 text-xs ${
-                        msg.sender === "user"
-                          ? "bg-white border border-[var(--border-paper)] ml-6"
-                          : "bg-white border-2 border-[var(--border-paper-strong)] shadow-xs mr-1 space-y-3"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between text-[10px] font-mono-provenance text-[var(--ink-muted)] mb-1">
-                        <span className="font-bold text-[var(--ink-primary)]">
-                          {msg.sender === "user"
-                            ? "🧑 Your Question"
-                            : "🤖 AI Answer (Backed by Your Papers)"}
-                        </span>
-                        <span>
-                          {new Date(msg.created_at).toLocaleTimeString([], {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </span>
-                      </div>
+                  chatMessages.map((msg) => {
+                    const isMsgIndo =
+                      detectQueryLanguage(`${msg.content} ${msg.thinking || ""}`) === "id";
+                    return (
+                      <div
+                        key={msg.id}
+                        className={`rounded-xl p-3.5 text-xs ${
+                          msg.sender === "user"
+                            ? "bg-white border border-[var(--border-paper)] ml-6"
+                            : "bg-white border-2 border-[var(--border-paper-strong)] shadow-xs mr-1 space-y-3"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between text-[10px] font-mono-provenance text-[var(--ink-muted)] mb-1">
+                          <span className="font-bold text-[var(--ink-primary)]">
+                            {msg.sender === "user"
+                              ? isMsgIndo
+                                ? "🧑 Pertanyaan Anda"
+                                : "🧑 Your Question"
+                              : isMsgIndo
+                                ? "🤖 Jawaban AI (Berdasarkan Dokumen Anda)"
+                                : "🤖 AI Answer (Backed by Your Papers)"}
+                          </span>
+                          <span>
+                            {new Date(msg.created_at).toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </span>
+                        </div>
 
-                      {/* Explicit AI Reasoning / Thinking Steps (Shown FIRST and open so user sees AI thinking) */}
-                      {msg.thinking && (
-                        <details
-                          open
-                          className="text-xs border border-[var(--accent-sage-border)] bg-[var(--accent-sage-light)]/40 rounded-lg p-2.5 group"
-                        >
-                          <summary className="cursor-pointer font-mono-provenance text-[10px] font-bold uppercase tracking-wider text-[var(--accent-sage-dark)] flex items-center justify-between list-none">
-                            <span className="flex items-center gap-1.5">
-                              <span className="h-2 w-2 rounded-full bg-[var(--accent-sage)] inline-block"></span>
-                              🧠 AI Thinking Process (How I Analyzed Your Document)
-                            </span>
-                            <span className="text-[10px] font-mono-provenance text-[var(--ink-muted)]">
-                              {msg.modelUsed || "Smart Study Engine"}
-                            </span>
-                          </summary>
-                          <div className="mt-2 pt-2 border-t border-[var(--border-paper)] font-mono-provenance text-[11px] leading-relaxed text-[var(--ink-secondary)] whitespace-pre-wrap bg-white p-2.5 rounded border border-[var(--border-paper)]">
-                            {msg.thinking}
-                          </div>
-                        </details>
-                      )}
+                        {/* Explicit AI Reasoning / Thinking Steps (Shown FIRST and open so user sees AI thinking) */}
+                        {msg.thinking && (
+                          <details
+                            open
+                            className="text-xs border border-[var(--accent-sage-border)] bg-[var(--accent-sage-light)]/40 rounded-lg p-2.5 group"
+                          >
+                            <summary className="cursor-pointer font-mono-provenance text-[10px] font-bold uppercase tracking-wider text-[var(--accent-sage-dark)] flex items-center justify-between list-none">
+                              <span className="flex items-center gap-1.5">
+                                <span className="h-2 w-2 rounded-full bg-[var(--accent-sage)] inline-block"></span>
+                                {isMsgIndo
+                                  ? "🧠 Proses Berpikir AI (Cara AI Menganalisis Dokumen)"
+                                  : "🧠 AI Thinking Process (How I Analyzed Your Document)"}
+                              </span>
+                              <span className="text-[10px] font-mono-provenance text-[var(--ink-muted)]">
+                                {msg.modelUsed || "Smart Study Engine"}
+                              </span>
+                            </summary>
+                            <div className="mt-2 pt-2 border-t border-[var(--border-paper)] font-mono-provenance text-[11px] leading-relaxed text-[var(--ink-secondary)] whitespace-pre-wrap bg-white p-2.5 rounded border border-[var(--border-paper)]">
+                              {msg.thinking}
+                            </div>
+                          </details>
+                        )}
 
-                      {/* Clean, Pretty Formatted Answer Content (No raw ** or *** stars) */}
-                      <div className="font-sans-ui">
-                        {msg.sender === "user" ? (
-                          <div className="whitespace-pre-wrap leading-relaxed text-[var(--ink-primary)] font-medium">
-                            {msg.content}
+                        {/* Clean, Pretty Formatted Answer Content (No raw ** or *** stars) */}
+                        <div className="font-sans-ui">
+                          {msg.sender === "user" ? (
+                            <div className="whitespace-pre-wrap leading-relaxed text-[var(--ink-primary)] font-medium">
+                              {msg.content}
+                            </div>
+                          ) : (
+                            renderPrettyAnswerContent(
+                              msg.content,
+                              msg.citations,
+                              msg.id,
+                              isMsgIndo
+                            )
+                          )}
+                        </div>
+
+                        {/* Render Clickable Page Proof Citations with Read More / Baca Selengkapnya */}
+                        {msg.citations && msg.citations.length > 0 && (
+                          <div className="border-t border-[var(--border-paper)] pt-2.5 space-y-2">
+                            <span className="font-mono-provenance text-[10px] font-bold text-[var(--accent-sage-dark)] uppercase block">
+                              {isMsgIndo
+                                ? `📌 Bukti Kutipan Halaman (${msg.citations.length}) — Klik untuk menyorot halaman di sebelah kiri:`
+                                : `📌 Exact Page Proof (${msg.citations.length}) — Click any box to highlight it on the left:`}
+                            </span>
+                            <div className="space-y-2">
+                              {msg.citations.map((cit, idx) => {
+                                const citKey = `${msg.id}_cit_${cit.id || idx}`;
+                                const isCitExpanded = Boolean(expandedCitationIds[citKey]);
+                                const cleanedQuote =
+                                  cleanChunkForDisplay(cit.passage_quote || "") ||
+                                  cit.passage_quote ||
+                                  "";
+                                const isLongQuote = cleanedQuote.length > 180 || cleanedQuote.includes("\n");
+
+                                let displayedQuote = cleanedQuote;
+                                if (isLongQuote && !isCitExpanded) {
+                                  const firstSlice = cleanedQuote.replace(/\n+/g, " ").slice(0, 180);
+                                  const lastSp = firstSlice.lastIndexOf(" ");
+                                  displayedQuote = `${(lastSp > 110 ? firstSlice.slice(0, lastSp) : firstSlice).replace(/[,.;:]+$/, "")}…`;
+                                }
+
+                                return (
+                                  <div
+                                    key={cit.id || idx}
+                                    className="w-full text-left rounded-xl border-2 border-[var(--accent-amber-border)] bg-amber-50/80 p-3 text-[11px] hover:bg-amber-100/70 transition space-y-1.5"
+                                  >
+                                    <div className="flex items-center justify-between gap-2">
+                                      <div className="flex items-center gap-1.5 min-w-0">
+                                        <span className="font-mono-provenance font-bold text-[var(--accent-amber)] shrink-0">
+                                          [{idx + 1}]
+                                        </span>
+                                        <span className="font-bold text-[var(--ink-primary)] truncate">
+                                          {cit.document_title || selectedPaper?.title || "Dokumen"} •{" "}
+                                          {isMsgIndo ? `Hal. ${cit.page_number}` : `Page ${cit.page_number}`}
+                                        </span>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleCitationClick(cit)}
+                                        className="font-mono-provenance text-[10px] bg-amber-200/90 hover:bg-amber-300 text-amber-950 px-2.5 py-0.5 rounded shrink-0 font-bold transition cursor-pointer"
+                                      >
+                                        {isMsgIndo
+                                          ? `Buka Hal. ${cit.page_number} →`
+                                          : `Show Page ${cit.page_number} →`}
+                                      </button>
+                                    </div>
+
+                                    <div
+                                      onClick={() => handleCitationClick(cit)}
+                                      className="italic text-[var(--ink-secondary)] whitespace-pre-line leading-relaxed cursor-pointer pl-5"
+                                    >
+                                      “{displayedQuote}”
+                                    </div>
+
+                                    {isLongQuote && (
+                                      <div className="pl-5 pt-0.5">
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setExpandedCitationIds((prev) => ({
+                                              ...prev,
+                                              [citKey]: !prev[citKey],
+                                            }));
+                                          }}
+                                          className="inline-flex items-center gap-1 rounded border border-amber-400/80 bg-white/90 px-2 py-0.5 font-mono-provenance text-[10px] font-bold text-amber-950 hover:bg-amber-100 transition cursor-pointer"
+                                        >
+                                          {isCitExpanded
+                                            ? isMsgIndo
+                                              ? "🔼 Sembunyikan Kutipan"
+                                              : "🔼 Show Less"
+                                            : isMsgIndo
+                                              ? "📖 Baca Kutipan Lengkap (Read More)"
+                                              : "📖 Read Full Quote"}
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
                           </div>
-                        ) : (
-                          renderPrettyAnswerContent(msg.content, msg.citations)
+                        )}
+
+                        {/* Key Takeaway Callout */}
+                        {msg.interpretation && (
+                          <div className="rounded-lg border-l-2 border-[var(--accent-sage)] bg-[var(--accent-sage-light)]/60 p-2.5 text-[11px] text-[var(--accent-sage-dark)]">
+                            <strong className="block font-bold">
+                              {isMsgIndo ? "💡 Intisari Penting:" : "💡 Simple Takeaway:"}
+                            </strong>
+                            {msg.interpretation}
+                          </div>
+                        )}
+
+                        {/* What's Not Covered Callout */}
+                        {msg.uncertainty && (
+                          <div className="rounded-lg border-l-2 border-amber-500 bg-amber-50/70 p-2 text-[10px] text-amber-900">
+                            <strong className="block font-bold">
+                              {isMsgIndo ? "⚠️ Catatan Tambahan:" : "⚠️ Good to Know:"}
+                            </strong>
+                            {msg.uncertainty}
+                          </div>
                         )}
                       </div>
-
-                      {/* Render Clickable Page Proof Citations */}
-                      {msg.citations && msg.citations.length > 0 && (
-                        <div className="border-t border-[var(--border-paper)] pt-2.5 space-y-1.5">
-                          <span className="font-mono-provenance text-[10px] font-bold text-[var(--accent-sage-dark)] uppercase block">
-                            📌 Exact Page Proof ({msg.citations.length}) — Click any box to highlight it on the left:
-                          </span>
-                          <div className="space-y-1.5">
-                            {msg.citations.map((cit, idx) => (
-                              <button
-                                key={cit.id || idx}
-                                onClick={() => handleCitationClick(cit)}
-                                className="w-full text-left rounded-lg border-2 border-[var(--accent-amber-border)] bg-amber-50/80 p-2.5 text-[11px] hover:bg-amber-100 transition flex items-start gap-2 cursor-pointer"
-                              >
-                                <span className="font-mono-provenance font-bold text-[var(--accent-amber)] shrink-0">
-                                  [{idx + 1}]
-                                </span>
-                                <div className="flex-1 min-w-0">
-                                  <div className="font-bold text-[var(--ink-primary)] truncate">
-                                    {cit.document_title || selectedPaper?.title || "Your Paper"} • Page {cit.page_number}
-                                  </div>
-                                  <div className="italic text-[var(--ink-secondary)] line-clamp-2 mt-0.5">
-                                    “{cit.passage_quote}”
-                                  </div>
-                                </div>
-                                <span className="font-mono-provenance text-[10px] bg-amber-200/80 text-amber-950 px-2 py-0.5 rounded shrink-0 font-bold">
-                                  Show Page {cit.page_number} →
-                                </span>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Key Takeaway Callout */}
-                      {msg.interpretation && (
-                        <div className="rounded-lg border-l-2 border-[var(--accent-sage)] bg-[var(--accent-sage-light)]/60 p-2.5 text-[11px] text-[var(--accent-sage-dark)]">
-                          <strong className="block font-bold">💡 Simple Takeaway:</strong>
-                          {msg.interpretation}
-                        </div>
-                      )}
-
-                      {/* What's Not Covered Callout */}
-                      {msg.uncertainty && (
-                        <div className="rounded-lg border-l-2 border-amber-500 bg-amber-50/70 p-2 text-[10px] text-amber-900">
-                          <strong className="block font-bold">⚠️ Good to Know:</strong>
-                          {msg.uncertainty}
-                        </div>
-                      )}
-                    </div>
-                  ))
+                    );
+                  })
                 )}
                 {chatLoading && (
                   <div className="rounded-xl border-2 border-[var(--accent-sage-border)] bg-white p-3.5 text-xs space-y-2 shadow-2xs">

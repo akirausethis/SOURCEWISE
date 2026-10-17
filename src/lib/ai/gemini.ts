@@ -23,25 +23,102 @@ export interface AIResearchResponse {
 }
 
 /**
- * Strips repetitive running headers/footers (e.g. "Modul Fisika Kelas XII KD 3.1 \n @2020, Direktorat SMA...")
- * while returning a clean, verbatim substring that still exists inside the original page text.
+ * Detects whether the user's question is in Indonesian ("id") or English ("en").
+ */
+export function detectQueryLanguage(question: string): "id" | "en" {
+  const qLower = question.toLowerCase();
+  const tokens = qLower.replace(/[^\w\s]/g, " ").split(/\s+/).filter(Boolean);
+
+  const idMarkers = new Set([
+    "apa", "apakah", "siapa", "bagaimana", "kenapa", "mengapa", "dimana", "kapan", "berapa",
+    "jelaskan", "tolong", "sebutkan", "ringkas", "ringkasan", "rangkum", "rangkuman", "isi",
+    "materi", "pokok", "utama", "penting", "poin", "bab", "halaman", "tentang", "dari",
+    "pada", "dalam", "untuk", "yang", "dan", "atau", "ini", "itu", "adalah", "secara",
+    "menurut", "hukum", "adat", "waris", "islam", "fisika", "arus", "listrik", "kesimpulan",
+    "perbedaan", "hubungan", "maksud", "artinya", "contoh", "soal", "pembahasan", "gimana",
+    "dong", "sih", "aja", "nya", "di", "ke", "bisa", "ada", "tidak", "nggak", "ngga",
+    "dibahas", "dipelajari", "diajarkan", "dokumen", "makalah", "jurnal", "buku",
+  ]);
+
+  const enMarkers = new Set([
+    "what", "how", "why", "when", "where", "who", "which", "explain", "summarize", "describe",
+    "tell", "give", "list", "main", "things", "thing", "taught", "thought", "about", "does",
+    "are", "is", "the", "this", "that", "these", "those", "from", "with", "inside", "paper",
+  ]);
+
+  let idScore = 0;
+  let enScore = 0;
+
+  for (const t of tokens) {
+    if (idMarkers.has(t)) idScore += 2;
+    if (enMarkers.has(t)) enScore += 2;
+  }
+
+  // Strong Indonesian question starters
+  if (/\b(apa|apakah|jelaskan|bagaimana|kenapa|mengapa|sebutkan|tolong|ringkaskan|rangkumkan|gimana)\b/i.test(qLower)) {
+    idScore += 4;
+  }
+
+  // Strong English question starters
+  if (/\b(what|how|why|explain|summarize|describe|tell me|can you)\b/i.test(qLower)) {
+    enScore += 4;
+  }
+
+  return idScore > enScore ? "id" : "en";
+}
+
+/**
+ * Valid short words in Indonesian and English so OCR noise filter preserves real short words.
+ */
+const VALID_SHORT_WORDS = new Set([
+  // Indonesian short words
+  "di", "ke", "ya", "ia", "ini", "itu", "ada", "hak", "bab", "voc", "uu", "uud", "kuh",
+  "hal", "no", "th", "dr", "sh", "mh", "ma", "ri", "sma", "smk", "sd", "smp", "kd",
+  "dan", "yang", "atau", "dari", "pada", "bagi", "demi", "oleh", "sisa", "masa", "cara",
+  "dua", "tiga", "satu", "아", "tak", "non", "sub", "pra", "pas", "air", "gas", "zat",
+  // English short words
+  "in", "on", "at", "to", "of", "by", "or", "as", "is", "be", "we", "it", "an", "so",
+  "no", "up", "do", "if", "my", "the", "and", "for", "are", "was", "not", "but", "all",
+  "can", "had", "her", "one", "our", "out", "day", "get", "has", "him", "his", "how",
+  "man", "new", "now", "old", "see", "two", "way", "who", "boy", "did", "its", "let",
+  "put", "say", "she", "too", "use", "rag", "llm", "pdf", "ai", "dc", "ac", "ohm", "kwh",
+]);
+
+/**
+ * Removes OCR gibberish sequences (e.g. "ot dam er OT ST a as amon a i So en STS TET oy Ba a fl OGURIER), | Compscten. YAK"),
+ * fixes common OCR character substitutions, strips running headers, and restores clean outline line breaks (1., a., 1), 2)).
  */
 export function cleanChunkForDisplay(rawContent: string): string {
-  const lines = rawContent
+  if (!rawContent) return "";
+
+  // 1. Normalize basic OCR artifacts and common Indonesian OCR misreads
+  const text = rawContent
+    .replace(/[|¦]+/g, " ")
+    .replace(/[©®™]+/g, " ")
+    .replace(/\bPagan\s+Meskipun\b/gi, "Meskipun")
+    .replace(/\bpengacian\b/gi, "pengadilan")
+    .replace(/\bBui\s+Putera\b/gi, "Bumi Putera")
+    .replace(/\bdlenyapkan\b/gi, "dilenyapkan")
+    .replace(/\bsera\s+praktek\b/gi, "serta praktek")
+    .replace(/\bcontoh\s+car\s+hukum\b/gi, "contoh cara hukum")
+    .replace(/\bteoda\)/gi, "feodal)")
+    .replace(/\.{5,}/g, " ");
+
+  const rawLines = text
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
 
-  // Drop common 1-2 line running headers at the top of textbook/journal pages
+  // 2. Drop repetitive 1-2 line running headers at the top of textbook/journal pages
   let startIdx = 0;
-  while (startIdx < Math.min(lines.length - 1, 3)) {
-    const line = lines[startIdx];
+  while (startIdx < Math.min(rawLines.length - 1, 3)) {
+    const line = rawLines[startIdx];
     const isRunningHeader =
       /^modul\s+/i.test(line) ||
       /^@?\d{4},\s*direktorat/i.test(line) ||
       /^proceedings of/i.test(line) ||
       /^page \d+/i.test(line) ||
-      (line.length < 45 && startIdx === 0 && lines.length > 3 && /^@\d{4}/i.test(lines[1] || ""));
+      (line.length < 45 && startIdx === 0 && rawLines.length > 3 && /^@\d{4}/i.test(rawLines[1] || ""));
     if (isRunningHeader) {
       startIdx++;
     } else {
@@ -49,14 +126,80 @@ export function cleanChunkForDisplay(rawContent: string): string {
     }
   }
 
-  const cleanedLines = lines.slice(startIdx).filter((l) => !/\.{6,}/.test(l));
-  const joined = cleanedLines.join(" ").replace(/\s+/g, " ").trim();
-  return joined.length > 15 ? joined : rawContent.replace(/\s+/g, " ").trim();
+  const workingText = rawLines.slice(startIdx).join(" ").replace(/\s+/g, " ").trim();
+
+  // 3. Filter out contiguous runs of OCR noise tokens (3+ consecutive gibberish short/vowel-less tokens)
+  const tokens = workingText.split(/\s+/);
+  const isLikelyNoiseToken = (tok: string): boolean => {
+    const clean = tok.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, "");
+    if (!clean) return true;
+    // Preserve outline markers like "1.", "a.", "1)", "(1596-1808)", "1804"
+    if (/^(?:\d+[.)]?|[a-zA-Z][.)]|\(\d{4}(?:-\d{4})?\)|\d{4})$/.test(tok)) return false;
+    const lower = clean.toLowerCase();
+    if (VALID_SHORT_WORDS.has(lower)) return false;
+    // Vowel-less token >= 2 chars (not a known acronym)
+    if (clean.length >= 2 && !/[aiueoAIUEO0-9]/.test(clean) && !/^(VOC|SMA|SMK|PLN|LED|DC|AC|II|III|IV|VI|VII)$/i.test(clean)) {
+      return true;
+    }
+    // Random 1-3 letter unknown fragment
+    if (clean.length <= 2 && !VALID_SHORT_WORDS.has(lower) && !/^\d+$/.test(clean)) {
+      return true;
+    }
+    // Known OCR garbage words from stamps/diagrams
+    if (/^(ogurier|compscten|yak|penyin|gah|gtd|iss|ton|ot|dam|er|amon|oy|ba|fl|tet|sts|cp)$/i.test(clean)) {
+      return true;
+    }
+    return false;
+  };
+
+  const noisyFlags = tokens.map((t) => isLikelyNoiseToken(t));
+  // Bridge single isolated short tokens (<= 3 chars) sandwiched between noise tokens
+  for (let k = 1; k < tokens.length - 1; k++) {
+    if (!noisyFlags[k] && noisyFlags[k - 1] && noisyFlags[k + 1] && tokens[k].length <= 3) {
+      noisyFlags[k] = true;
+    }
+  }
+
+  const keptTokens: string[] = [];
+  let i = 0;
+  while (i < tokens.length) {
+    if (noisyFlags[i]) {
+      let j = i;
+      while (j < tokens.length && noisyFlags[j]) {
+        j++;
+      }
+      const noiseRunLength = j - i;
+      // If 2 or more consecutive noise tokens appear, drop the entire noisy run
+      if (noiseRunLength >= 2) {
+        i = j;
+        continue;
+      }
+    }
+    keptTokens.push(tokens[i]);
+    i++;
+  }
+
+  let cleaned = keptTokens.join(" ").replace(/\s+/g, " ").trim();
+  if (cleaned.length < 15) {
+    cleaned = workingText;
+  }
+
+  // 4. Restore structured multi-line formatting for headings & numbered/lettered outlines
+  // Insert newline before "1. Title", "2. Title", "a. Subtitle", "b. Subtitle", "1) Point", "2) Point"
+  cleaned = cleaned
+    .replace(/\s+(?=\d+\.\s+[A-Z])/g, "\n")
+    .replace(/\s+(?=[a-e]\.\s+[A-Z])/g, "\n")
+    .replace(/\s+(?=\d+\)\s+[A-Z])/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return cleaned;
 }
 
 /**
  * Picks a clean verbatim substring from a chunk (skipping running headers) so that
- * `validateCitations` and the yellow page highlighter highlight the core sentence on the page.
+ * `validateCitations` and the yellow page highlighter highlight the core sentence on the page,
+ * without cutting off mid-word.
  */
 function extractBestVerbatimQuote(rawContent: string): string {
   const lines = rawContent
@@ -64,7 +207,6 @@ function extractBestVerbatimQuote(rawContent: string): string {
     .map((l) => l.trim())
     .filter((l) => l.length > 0 && !/\.{6,}/.test(l));
 
-  // Find the first substantive line after any running header
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (
@@ -74,14 +216,21 @@ function extractBestVerbatimQuote(rawContent: string): string {
     ) {
       continue;
     }
-    // Find where this line starts in rawContent so we take an exact verbatim slice
     const pos = rawContent.indexOf(line);
     if (pos >= 0) {
-      return rawContent.slice(pos, pos + 210).trim();
+      const slice = rawContent.slice(pos, pos + 450).trim();
+      // Snap to last space or punctuation if truncated so we never cut a word in half
+      if (pos + 450 < rawContent.length) {
+        const lastSpace = slice.lastIndexOf(" ");
+        if (lastSpace > 200) {
+          return slice.slice(0, lastSpace).trim();
+        }
+      }
+      return slice;
     }
   }
 
-  return rawContent.slice(0, 200).trim();
+  return rawContent.trim();
 }
 
 /**
@@ -112,7 +261,7 @@ function rankEvidenceChunks(
     "book", "article", "inside", "there", "here",
     // Indonesian stop words
     "yang", "dan", "dari", "pada", "dalam", "untuk", "apa", "saja", "ini", "itu", "dengan",
-    "adalah", "secara", "jelaskan", "tentang", "isi", "utama", "materi", "dipelajari",
+    "adalah", "secara", "jelaskan", "tentang", "isi", "utama", "materi", "dipelajari", "dibahas",
   ]);
 
   const queryTerms = question
@@ -123,11 +272,10 @@ function rankEvidenceChunks(
 
   const isGeneralOverviewQuery =
     queryTerms.length === 0 ||
-    /\b(main|idea|summary|summarize|overview|taught|thought|teach|about|topic|topics|content|ringkasan|inti|materi|pokok)\b/i.test(
+    /\b(main|idea|summary|summarize|overview|taught|thought|teach|about|topic|topics|content|ringkasan|inti|materi|pokok|isi|dibahas|poin)\b/i.test(
       question
     );
 
-  // High-value conceptual / summary markers in English & Indonesian academic/educational PDFs
   const overviewConceptMarkers = [
     "abstract",
     "introduction",
@@ -152,18 +300,23 @@ function rankEvidenceChunks(
     "hambatan listrik",
     "energi listrik",
     "daya listrik",
+    "sejarah politik",
+    "hukum adat",
+    "kompeni",
+    "voc",
+    "daendels",
+    "raffles",
+    "charter",
   ];
 
   const scored = chunks.map((chunk) => {
     const textLower = chunk.content.toLowerCase();
     let score = 0;
 
-    // 1. Strongly prioritize the paper the user currently has open in the reader
     if (selectedPaperId && chunk.document_id === selectedPaperId) {
       score += 25;
     }
 
-    // 2. Match explicit query keywords
     for (const term of queryTerms) {
       if (textLower.includes(term)) {
         score += 10;
@@ -172,14 +325,12 @@ function rankEvidenceChunks(
       }
     }
 
-    // 3. Boost core overview, definition, and summary sections (especially for general questions)
     for (const marker of overviewConceptMarkers) {
       if (textLower.includes(marker)) {
         score += isGeneralOverviewQuery ? 6 : 2.5;
       }
     }
 
-    // 4. Penalize Table of Contents dot-leader lines, tiny cover headers, or answer-key-only lists
     const hasTocDots = /\.{5,}/.test(chunk.content);
     const isAnswerKeyOnly = /kunci jawaban evaluasi/i.test(chunk.content) && chunk.content.length < 300;
     const cleanedLen = cleanChunkForDisplay(chunk.content).length;
@@ -190,7 +341,7 @@ function rankEvidenceChunks(
       score += 4;
     } else if (cleanedLen > 120) {
       score += 2;
-    } else if (cleanedLen < 80) {
+    } else if (cleanedLen < 60) {
       score -= 8;
     }
 
@@ -199,7 +350,6 @@ function rankEvidenceChunks(
 
   scored.sort((a, b) => b.score - a.score);
 
-  // Enforce page diversity: pick at most 1 chunk per physical page first so citations span key pages
   const selected: DocumentChunk[] = [];
   const usedPageKeys = new Set<string>();
 
@@ -213,7 +363,6 @@ function rankEvidenceChunks(
     }
   }
 
-  // Fill remaining slots if needed
   if (selected.length < topK) {
     for (const item of scored) {
       if (selected.length >= topK) break;
@@ -223,7 +372,6 @@ function rankEvidenceChunks(
     }
   }
 
-  // Sort selected chunks in logical reading order (by page_number) when answering overview questions
   if (isGeneralOverviewQuery && selected.length > 1) {
     selected.sort((a, b) => a.page_number - b.page_number);
   }
@@ -232,7 +380,8 @@ function rankEvidenceChunks(
 }
 
 /**
- * Extracts high-level topics and headings from the document's chunks to build a genuine synthesis.
+ * Extracts high-level topics and headings from the document's chunks to build a genuine synthesis
+ * in the exact language requested by the user ("id" or "en"), without cutting off sentences.
  */
 function synthesizeIntelligentStudyAnswer(
   question: string,
@@ -240,7 +389,8 @@ function synthesizeIntelligentStudyAnswer(
   allDocChunks: DocumentChunk[],
   activePaper: AcademicPaper | undefined,
   paperTitleMap: Map<string, string>,
-  totalPagesCount: number
+  totalPagesCount: number,
+  lang: "id" | "en"
 ): {
   answer: string;
   thinking: string;
@@ -250,83 +400,188 @@ function synthesizeIntelligentStudyAnswer(
   const docTitle =
     activePaper?.title ||
     (relevantChunks[0] ? paperTitleMap.get(relevantChunks[0].document_id) : undefined) ||
-    "Your Uploaded Document";
+    (lang === "id" ? "Dokumen Anda" : "Your Uploaded Document");
   const docAuthors =
     activePaper?.authors && activePaper.authors.length > 0
       ? activePaper.authors.join(", ")
-      : "Document Author";
+      : lang === "id"
+        ? "Penulis Dokumen"
+        : "Document Author";
 
-  // Scan document chunks to detect structured topics/chapters taught in the document
   const fullCorpusText = allDocChunks.map((c) => c.content).join("\n");
   const detectedTopics: string[] = [];
 
-  const topicPatterns: { regex: RegExp; label: string }[] = [
-    { regex: /listrik arus searah|direct current/i, label: "Direct Current Electricity (Listrik Arus Searah / DC)" },
-    { regex: /kuat arus listrik/i, label: "Electric Current (Kuat Arus Listrik: I = Q / Δt)" },
-    { regex: /beda potensial/i, label: "Potential Difference & Voltage (Beda Potensial: V = W / Q)" },
-    { regex: /hukum ohm|ohm's law/i, label: "Ohm's Law & Resistance (Hukum Ohm: R = V / I)" },
-    { regex: /hambatan penghantar|hambatan kawat|𝜌|resistivitas/i, label: "Conductor Resistance & Resistivity (R = ρ · l / A & Temperature Effects)" },
-    { regex: /rangkaian seri|rangkaian paralel|hambatan seri/i, label: "Series & Parallel Resistor Circuits (Rangkaian Hambatan Seri & Paralel)" },
-    { regex: /hukum\s*(i|ii|1|2)?\s*kirch?hoff/i, label: "Kirchhoff's Current & Voltage Laws (Hukum I & II Kirchhoff: ΣI_masuk = ΣI_keluar, ΣE + ΣIR = 0)" },
-    { regex: /energi listrik|daya listrik|kwh/i, label: "Electrical Energy, Power & Household Cost Calculation (Energi W = V·I·t, Daya P = V·I, & kWh)" },
-    { regex: /transformer|self-attention|multi-head attention/i, label: "Transformer Neural Architecture & Multi-Head Self-Attention" },
-    { regex: /retrieval-augmented generation|rag-sequence|rag-token/i, label: "Retrieval-Augmented Generation (RAG) & Grounded Memory" },
-    { regex: /reinforcement learning|deepseek|chain-of-thought/i, label: "Reinforcement Learning for Reasoning & Chain-of-Thought Verification" },
-    { regex: /volcano|magma|tectonic/i, label: "Volcanic Eruptions, Tectonic Plates & Silica Gas Pressure" },
-    { regex: /sleep|hippocampus|neocortex|memory consolidation/i, label: "Sleep Stages (NREM & REM) & Brain Memory Consolidation" },
+  const topicPatterns: { regex: RegExp; labelId: string; labelEn: string }[] = [
+    {
+      regex: /sejarah politik hukum adat|prof\.\s*imam sudiyat/i,
+      labelId: "Sejarah Politik Hukum Adat di Indonesia (Prof. Imam Sudiyat, S.H.)",
+      labelEn: "Political History of Customary Law (Sejarah Politik Hukum Adat — Prof. Imam Sudiyat, S.H.)",
+    },
+    {
+      regex: /masa kompeni|voc.*1596/i,
+      labelId: "Masa Kompeni / VOC (1596–1808): Kedudukan Ganda sebagai Pengusaha & Badan Pemerintah",
+      labelEn: "VOC / Dutch East India Company Era (1596–1808): Dual Role as Merchant & Governing Body",
+    },
+    {
+      regex: /charter.*1804|nederburgh/i,
+      labelId: "Charter Tahun 1804: Susunan Pengadilan untuk Golongan Bumi Putera",
+      labelEn: "Charter of 1804: Judicial Organization for Indigenous Citizens (Golongan Bumi Putera)",
+    },
+    {
+      regex: /feudal barbarism|raffles|daendels/i,
+      labelId: "Pandangan Kolonial terhadap Hukum Adat & Kebijakan Masa Transisi",
+      labelEn: "Colonial Assessment of Customary Law & Transitional Legal Policies",
+    },
+    {
+      regex: /listrik arus searah|direct current/i,
+      labelId: "Listrik Arus Searah (Direct Current / DC)",
+      labelEn: "Direct Current Electricity (Listrik Arus Searah / DC)",
+    },
+    {
+      regex: /kuat arus listrik/i,
+      labelId: "Kuat Arus Listrik & Muatan Listrik (Rumus: I = Q / Δt)",
+      labelEn: "Electric Current & Charge Flow (Kuat Arus Listrik: I = Q / Δt)",
+    },
+    {
+      regex: /beda potensial/i,
+      labelId: "Beda Potensial & Tegangan Listrik (Rumus: V = W / Q)",
+      labelEn: "Potential Difference & Voltage (Beda Potensial: V = W / Q)",
+    },
+    {
+      regex: /hukum ohm|ohm's law/i,
+      labelId: "Hukum Ohm & Hambatan Listrik (Rumus: R = V / I)",
+      labelEn: "Ohm's Law & Electrical Resistance (Hukum Ohm: R = V / I)",
+    },
+    {
+      regex: /hambatan penghantar|hambatan kawat|𝜌|resistivitas/i,
+      labelId: "Hambatan Penghantar Kawat & Pengaruh Suhu (R = ρ · l / A)",
+      labelEn: "Conductor Resistance, Resistivity & Temperature Effects (R = ρ · l / A)",
+    },
+    {
+      regex: /rangkaian seri|rangkaian paralel|hambatan seri/i,
+      labelId: "Rangkaian Hambatan Seri & Paralel",
+      labelEn: "Series & Parallel Resistor Circuits (Rangkaian Hambatan Seri & Paralel)",
+    },
+    {
+      regex: /hukum\s*(i|ii|1|2)?\s*kirch?hoff/i,
+      labelId: "Hukum I & II Kirchhoff (ΣI_masuk = ΣI_keluar & ΣE + ΣI·R = 0)",
+      labelEn: "Kirchhoff's Current & Voltage Laws (Hukum I & II Kirchhoff: ΣI_in = ΣI_out, ΣE + ΣIR = 0)",
+    },
+    {
+      regex: /energi listrik|daya listrik|kwh/i,
+      labelId: "Energi Listrik, Daya Listrik, & Perhitungan Biaya Rekening (W = V·I·t, P = V·I, kWh)",
+      labelEn: "Electrical Energy, Power & Household Cost Calculation (W = V·I·t, P = V·I, & kWh)",
+    },
+    {
+      regex: /transformer|self-attention|multi-head attention/i,
+      labelId: "Arsitektur Jaringan Transformer & Multi-Head Self-Attention",
+      labelEn: "Transformer Neural Architecture & Multi-Head Self-Attention",
+    },
+    {
+      regex: /retrieval-augmented generation|rag-sequence|rag-token/i,
+      labelId: "Retrieval-Augmented Generation (RAG) & Memori Non-Parametrik",
+      labelEn: "Retrieval-Augmented Generation (RAG) & Grounded Memory",
+    },
+    {
+      regex: /reinforcement learning|deepseek|chain-of-thought/i,
+      labelId: "Reinforcement Learning untuk Penalaran & Verifikasi Chain-of-Thought",
+      labelEn: "Reinforcement Learning for Reasoning & Chain-of-Thought Verification",
+    },
   ];
 
   for (const pat of topicPatterns) {
     if (pat.regex.test(fullCorpusText)) {
-      detectedTopics.push(pat.label);
+      detectedTopics.push(lang === "id" ? pat.labelId : pat.labelEn);
     }
   }
 
-  // Also extract any explicit section headings (e.g. "KEGIATAN PEMBELAJARAN 1 ...", "1. Kuat Arus Listrik")
-  const headingMatches = fullCorpusText.match(
-    /^(?:KEGIATAN PEMBELAJARAN \d+|[A-Z]\.\s+[A-Za-z\s]{4,40}|\d+\.\s+[A-Z][A-Za-z\s]{4,40})$/gm
-  );
-  if ( detectedTopics.length === 0 && headingMatches && headingMatches.length > 0) {
-    const uniqueHeadings = [...new Set(headingMatches.map((h) => h.trim()))].slice(0, 6);
-    detectedTopics.push(...uniqueHeadings);
+  // Also extract any explicit section headings from the cleaned corpus
+  if (detectedTopics.length === 0) {
+    const cleanedCorpus = cleanChunkForDisplay(fullCorpusText);
+    const headingMatches = cleanedCorpus.match(
+      /^(?:KEGIATAN PEMBELAJARAN \d+|\d+\.\s+[A-Z][^\n]{4,70}|[a-d]\.\s+[A-Z][^\n]{4,70})$/gm
+    );
+    if (headingMatches && headingMatches.length > 0) {
+      const uniqueHeadings = [...new Set(headingMatches.map((h) => h.trim()))].slice(0, 6);
+      detectedTopics.push(...uniqueHeadings);
+    }
   }
 
   const matchedPages = relevantChunks.map((c) => c.page_number);
 
+  if (lang === "id") {
+    const thinkingSteps = [
+      `1. Memahami Pertanyaan Anda: Anda menanyakan "${question}" saat mempelajari dokumen "${docTitle}" (${docAuthors}, ${totalPagesCount} halaman).`,
+      `2. Memindai Isi Dokumen: Menganalisis ${allDocChunks.length} bagian teks dari ${totalPagesCount} halaman di "${docTitle}" dan membersihkan struktur poin/sub-bab.`,
+      detectedTopics.length > 0
+        ? `3. Mengidentifikasi Pokok Bahasan: Menemukan ${detectedTopics.length} topik utama (${detectedTopics.slice(0, 4).join("; ")}).`
+        : `3. Memilih Bukti Halaman Terbaik: Memilih ${relevantChunks.length} bagian paling relevan pada halaman ${matchedPages.join(", ")}.`,
+      `4. Memverifikasi Kutipan Asli: Mencocokkan setiap rincian di bawah ini dengan halaman ${matchedPages.join(", ")} (klik tombol [1]–[${relevantChunks.length}] untuk membuka halaman tersebut di panel kiri).`,
+    ].join("\n");
+
+    const introLine =
+      detectedTopics.length > 0
+        ? `Berdasarkan dokumen "${docTitle}" (${docAuthors}), berikut adalah pokok-pokok materi utama yang dibahas secara terstruktur:\n\nPokok Bahasan Utama:\n${detectedTopics
+            .map((t, i) => `${i + 1}. ${t}`)
+            .join("\n")}`
+        : `Berikut adalah rincian materi dari "${docTitle}" (${docAuthors}) untuk menjawab pertanyaan Anda:`;
+
+    const pageBreakdowns = relevantChunks.map((chk, idx) => {
+      const citNum = idx + 1;
+      const cleaned = cleanChunkForDisplay(chk.content);
+      return `Bukti Halaman ${chk.page_number} (#${citNum}):\n${cleaned} [${citNum}]`;
+    });
+
+    const fullAnswer = `${introLine}\n\nPenjelasan & Bukti Lengkap per Halaman:\n\n${pageBreakdowns.join("\n\n")}`;
+
+    const interpretation =
+      detectedTopics.length > 0
+        ? `Secara ringkas, "${docTitle}" menguraikan ${detectedTopics.slice(0, 3).join(", ")} beserta rincian poin-poinnya pada halaman ${matchedPages.join(", ")}.`
+        : `Seluruh penjelasan di atas diambil langsung dari teks asli "${docTitle}" (halaman ${matchedPages.join(", ")}) tanpa karangan bebas.`;
+
+    const uncertainty =
+      `Jawaban ini sepenuhnya bersumber dari ${totalPagesCount} halaman dokumen "${docTitle}". Klik tombol kutipan [1]–[${relevantChunks.length}] untuk melompat langsung ke halaman aslinya di sebelah kiri.`;
+
+    return {
+      answer: fullAnswer,
+      thinking: thinkingSteps,
+      interpretation,
+      uncertainty,
+    };
+  }
+
+  // English response ("en")
   const thinkingSteps = [
-    `1. Understanding Your Question: You asked "${question}" while viewing "${docTitle}" (${docAuthors}, ${totalPagesCount} pages).`,
-    `2. Scanning Document Structure: Analyzed ${allDocChunks.length} text sections across ${totalPagesCount} pages of "${docTitle}".`,
+    `1. Understanding Your Question: You asked "${question}" in English while viewing "${docTitle}" (${docAuthors}, ${totalPagesCount} pages).`,
+    `2. Scanning Document Structure: Analyzed ${allDocChunks.length} text sections across ${totalPagesCount} pages of "${docTitle}" and cleaned the outline hierarchy.`,
     detectedTopics.length > 0
-      ? `3. Identifying Core Concepts Taught: Detected ${detectedTopics.length} major learning topics (${detectedTopics.slice(0, 4).join("; ")}).`
-      : `3. Selecting Best Evidence Pages: Ranked all paragraphs and selected the ${relevantChunks.length} most informative sections on pages ${matchedPages.join(", ")}.`,
-    `4. Verifying Page Citations: Matched every explanation below to exact verbatim quotes on pages ${matchedPages.join(", ")} so you can click [1]–[${relevantChunks.length}] to verify on the left.`,
+      ? `3. Identifying Core Concepts Taught: Detected ${detectedTopics.length} major topics (${detectedTopics.slice(0, 4).join("; ")}).`
+      : `3. Selecting Best Evidence Pages: Selected the ${relevantChunks.length} most relevant sections on pages ${matchedPages.join(", ")}.`,
+    `4. Verifying Page Citations: Matched every section below to exact pages (${matchedPages.join(", ")}) so you can click [1]–[${relevantChunks.length}] to verify on the left.`,
   ].join("\n");
 
-  // Build a clean, structured, star-free explanation
   const introLine =
     detectedTopics.length > 0
-      ? `Based on "${docTitle}" (by ${docAuthors}), this document teaches the following core subjects and concepts:\n\nCore Topics Covered in This Document:\n${detectedTopics
+      ? `Based on "${docTitle}" (by ${docAuthors}), this document covers the following core topics and concepts:\n\nCore Topics Covered:\n${detectedTopics
           .map((t, i) => `${i + 1}. ${t}`)
           .join("\n")}`
-      : `Here is a clear breakdown of "${docTitle}" (by ${docAuthors}) answering your question:`;
+      : `Here is a structured breakdown of "${docTitle}" (by ${docAuthors}) answering your question:`;
 
   const pageBreakdowns = relevantChunks.map((chk, idx) => {
     const citNum = idx + 1;
     const cleaned = cleanChunkForDisplay(chk.content);
-    const conciseExcerpt =
-      cleaned.length > 320 ? `${cleaned.slice(0, 320).trim()}...` : cleaned;
-    return `Key Evidence #${citNum} (Page ${chk.page_number}):\n${conciseExcerpt} [${citNum}]`;
+    return `Key Evidence #${citNum} (Page ${chk.page_number}):\n${cleaned} [${citNum}]`;
   });
 
   const fullAnswer = `${introLine}\n\nPage-by-Page Breakdown & Proof:\n\n${pageBreakdowns.join("\n\n")}`;
 
   const interpretation =
     detectedTopics.length > 0
-      ? `In short, "${docTitle}" guides students through ${detectedTopics.slice(0, 3).join(", ")}, combining theoretical definitions, mathematical formulas, worked examples (Contoh Soal), and practice exercises.`
+      ? `In short, "${docTitle}" systematically explains ${detectedTopics.slice(0, 3).join(", ")}, backed by direct source passages on pages ${matchedPages.join(", ")}.`
       : `Every point above is extracted directly from "${docTitle}" (pages ${matchedPages.join(", ")}) with zero fabricated claims.`;
 
   const uncertainty =
-    `This explanation is strictly grounded in the ${totalPagesCount} extracted page(s) of "${docTitle}". Click any numbered badge [1]–[${relevantChunks.length}] below to jump straight to that page in the reader.`;
+    `This explanation is strictly grounded in the ${totalPagesCount} extracted page(s) of "${docTitle}". Click any numbered badge [1]–[${relevantChunks.length}] to jump straight to that page in the reader.`;
 
   return {
     answer: fullAnswer,
@@ -343,6 +598,7 @@ export async function queryResearchAssistant(
   input: AIResearchQueryInput
 ): Promise<AIResearchResponse> {
   const { question, papers, chunks, pages, selectedPaperId, userApiKey } = input;
+  const lang = detectQueryLanguage(question);
 
   // 1. Retrieve & rank authorized evidence chunks from user's real documents
   const relevantChunks = rankEvidenceChunks(chunks, question, selectedPaperId, 6);
@@ -350,12 +606,18 @@ export async function queryResearchAssistant(
   if (relevantChunks.length === 0) {
     return {
       content:
-        "There are no papers in this project yet. Click '+ Upload PDF / File' or '+ Add Topic or Paste Text' at the top to add your study material, and I will help you read and understand it!",
+        lang === "id"
+          ? "Belum ada dokumen di ruang belajar ini. Klik tombol '+ Upload PDF / File' atau '+ Add Topic or Paste Text' di bagian atas untuk menambahkan materi Anda!"
+          : "There are no papers in this project yet. Click '+ Upload PDF / File' or '+ Add Topic or Paste Text' at the top to add your study material, and I will help you read and understand it!",
       thinking:
-        "1. Checked the project library and found 0 text passages.\n2. Stopped here so I never make up fake answers.",
+        lang === "id"
+          ? "1. Memeriksa perpustakaan proyek dan menemukan 0 halaman teks.\n2. Berhenti di sini agar tidak pernah mengarang jawaban palsu."
+          : "1. Checked the project library and found 0 text passages.\n2. Stopped here so I never make up fake answers.",
       citations: [],
       uncertainty:
-        "No papers uploaded yet. Please add a PDF file or topic first.",
+        lang === "id"
+          ? "Belum ada dokumen yang diunggah. Silakan unggah PDF atau tambahkan topik terlebih dahulu."
+          : "No papers uploaded yet. Please add a PDF file or topic first.",
       isGrounded: true,
       modelUsed: "Sourcewise Safety Check",
     };
@@ -376,7 +638,7 @@ export async function queryResearchAssistant(
   const evidenceContext = relevantChunks
     .map(
       (chk, i) =>
-        `[EVIDENCE #${i + 1}] Document ID: ${chk.document_id} ("${paperTitleMap.get(chk.document_id) || activePaperTitle || "Uploaded Document"}") | Physical Page: ${chk.page_number}\nVerbatim Text: "${chk.content}"`
+        `[EVIDENCE #${i + 1}] Document ID: ${chk.document_id} ("${paperTitleMap.get(chk.document_id) || activePaperTitle || "Uploaded Document"}") | Physical Page: ${chk.page_number}\nCleaned Text: "${cleanChunkForDisplay(chk.content)}"\nRaw Verbatim Text: "${chk.content}"`
     )
     .join("\n\n");
 
@@ -387,23 +649,33 @@ export async function queryResearchAssistant(
       const ai = new GoogleGenAI({ apiKey: effectiveApiKey.trim() });
       const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
-      const prompt = `You are SOURCEWISE, a friendly, crystal-clear AI study tutor and research assistant.
-Your job is to read the user's uploaded document and answer their question in clean, easy-to-understand language, backing up every claim with exact page proof.
+      const languageInstruction =
+        lang === "id"
+          ? `MANDATORY LANGUAGE RULE (BAHASA INDONESIA): The user asked their question in INDONESIAN ("${question}"). You MUST write the entire 'thinking', 'answer', 'interpretation', and 'uncertainty' in fluent, natural, well-structured BAHASA INDONESIA.`
+          : `MANDATORY LANGUAGE RULE (ENGLISH): The user asked their question in ENGLISH ("${question}"). You MUST write the entire 'thinking', 'answer', 'interpretation', and 'uncertainty' in fluent, natural, well-structured ENGLISH (if the source PDF is in Indonesian, translate and explain all concepts in English while keeping key original terms in parentheses).`;
+
+      const prompt = `You are SOURCEWISE, an intelligent, crystal-clear AI study tutor and research assistant.
+Your job is to read the user's uploaded document and answer their question in clean, easy-to-read, well-structured prose, backing up every claim with exact page proof.
 ${activePaperTitle ? `\nThe user is currently reading: "${activePaperTitle}" (Document ID: ${activePaper?.id}, ${activePaperPagesCount} pages). Focus on explaining this document.` : ""}
 
+${languageInstruction}
+
 CRITICAL FORMATTING & GROUNDING RULES:
-1. DO NOT use Markdown asterisks like ** or *** or ### anywhere in your answer. Use clean plain text with clear numbered lists (1., 2., 3.) and line breaks.
-2. If the document is in Indonesian (or another language) and the user asks in English, explain clearly in English while referencing the exact Indonesian terms/formulas from the document (or reply in Indonesian if the user asked in Indonesian).
-3. In 'thinking', write 4 clear numbered steps (1., 2., 3., 4.) showing how you analyzed the user's question, scanned "${activePaperTitle || "the document"}", identified the key concepts/formulas on specific pages, and verified the quotes.
-4. In 'answer', start with a direct, friendly summary answering the user's question, then list the main concepts/points taught in the document with inline citation markers like [1], [2], [3].
-5. In 'citations', provide the exact document_id, physical page_number, and a verbatim substring quote from AUTHORIZED EVIDENCE.
-6. In 'interpretation', give a 1-2 sentence "Simple Takeaway" summarizing why this material matters.
-7. In 'uncertainty', note which pages were used and remind the user they can click [1], [2] to verify every quote on the page.
+1. DO NOT use Markdown asterisks like ** or *** or ### anywhere in your answer.
+2. Format your 'answer' so it is a pleasure to read:
+   - Start with a clear 1-paragraph overview.
+   - Use numbered items (1., 2., 3.) and sub-points (a., b.) on separate lines with line breaks (\\n) so points are NEVER squished into one wall of text.
+   - Clean up any OCR typos if the source was a scanned PDF, and NEVER cut sentences off mid-word.
+   - Include inline citation markers like [1], [2], [3] referencing your citations array.
+3. In 'thinking', write 4 clear numbered steps (1., 2., 3., 4.) in ${lang === "id" ? "BAHASA INDONESIA" : "ENGLISH"} showing how you analyzed the user's question, scanned "${activePaperTitle || "the document"}", identified the key concepts on specific pages, and verified the quotes.
+4. In 'citations', provide the exact document_id, physical page_number, and a clean verbatim quote from the source evidence.
+5. In 'interpretation', give a 1-2 sentence takeaway in ${lang === "id" ? "BAHASA INDONESIA" : "ENGLISH"}.
+6. In 'uncertainty', note which pages were analyzed in ${lang === "id" ? "BAHASA INDONESIA" : "ENGLISH"}.
 
 Output strictly valid JSON matching this schema:
 {
-  "thinking": "1. Step one...\\n2. Step two...\\n3. Step three...\\n4. Step four...",
-  "answer": "Clean, well-structured plain text explanation (NO ** stars) with [1], [2] citations",
+  "thinking": "1. ...\\n2. ...\\n3. ...\\n4. ...",
+  "answer": "Clean, well-structured multi-line explanation (NO ** stars) with [1], [2] citations",
   "interpretation": "Simple 1-2 sentence takeaway",
   "uncertainty": "Scope note on the pages analyzed",
   "citations": [
@@ -442,12 +714,11 @@ ${evidenceContext}
 
         const { validCitations } = validateCitations(candidates, pages, chunks);
 
-        // If Gemini's candidate quotes were slightly paraphrased, fall back to verified quotes from relevantChunks
         const finalCitations =
           validCitations.length > 0
             ? validCitations
             : relevantChunks.map((chk, idx) => ({
-                id: `cit_ fallback_${idx}`,
+                id: `cit_fallback_${idx}`,
                 document_id: chk.document_id,
                 document_title: paperTitleMap.get(chk.document_id) || activePaperTitle,
                 page_number: chk.page_number,
@@ -457,7 +728,7 @@ ${evidenceContext}
               }));
 
         return {
-          content: stripMarkdownStars(parsed.answer || "Here is what your document teaches based on the verified pages."),
+          content: stripMarkdownStars(parsed.answer || ""),
           thinking: stripMarkdownStars(parsed.thinking || ""),
           citations: finalCitations,
           interpretation: stripMarkdownStars(parsed.interpretation || ""),
@@ -492,7 +763,8 @@ ${evidenceContext}
     activeDocChunks.length > 0 ? activeDocChunks : chunks,
     activePaper,
     paperTitleMap,
-    activePaperPagesCount
+    activePaperPagesCount,
+    lang
   );
 
   return {

@@ -1,4 +1,5 @@
 import { AcademicPaper, DocumentPage, DocumentChunk } from "@/types";
+import { cleanChunkForDisplay } from "@/lib/ai/gemini";
 
 /**
  * Checks if a string looks like raw PDF binary/dictionary syntax rather than human-readable text.
@@ -443,14 +444,19 @@ export async function extractDocumentInBrowser(
       hasSelectableText = rawPages.some((p) => p.text.trim().length > 15);
     }
 
-    // Ensure every physical page of the PDF is preserved in the reader even if a page is a diagram or cover image
-    rawPages = rawPages.map((p) => ({
-      ...p,
-      text:
-        p.text.trim().length > 0
-          ? p.text.trim()
-          : `[Visual Page ${p.page_number} from "${file.name.replace(/\.[^/.]+$/, "")}"]`,
-    }));
+    // Ensure every physical page of the PDF is preserved in the reader and clean any OCR artifacts / outline structure
+    rawPages = rawPages.map((p) => {
+      const cleaned = cleanChunkForDisplay(p.text);
+      return {
+        ...p,
+        text:
+          cleaned.length > 0
+            ? cleaned
+            : p.text.trim().length > 0
+              ? p.text.trim()
+              : `[Visual Page ${p.page_number} from "${file.name.replace(/\.[^/.]+$/, "")}"]`,
+      };
+    });
   } else {
     const rawText = await file.text();
     rawPages = splitTextToPagesClient(rawText);
