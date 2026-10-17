@@ -194,6 +194,17 @@ describe("Strict Citation Validator", () => {
     expect(cleaned2).toContain("pengadilan");
     expect(cleaned2).toContain("Bumi Putera");
 
+    const noisyPage2ReaderText =
+      'Meskipun demikian demi ketertiban dan keamanan bagi\nb. CHARTER tahun 1804 Pasal tersebut menyebutkan sebagai berikut. merupakan "Susunan pengadilan Untuk golongan Bumi Putera akan tetap Penilaian terhadap HUKUM ADAT thnggel merit hum cot meet Forms titan HUI ADAT Peat His Belanda akan Menjaga dengan Akal tel Peraturan tersebut memperlihatkan bahwa tepat guna supaya di dalam wilayah yang langsung dikuasai ia lo haha Aam atu pita cen CAE per sone Lain daripada itu VOC menganggap bahwa hukum oie hon 5 Semarang berwenang mengadili perkara sipil atau pidana di Indonesia, Namun hukum adat itu tidak boleh diterapkan jika kalangan orang-orang jawa. Sebaliknya di dalam hal perkara bertentangan dengan perintah kemudian dan perintah umum campuran yaitu antara orang Jawa dengan orang Belanda, maka dari penguasa atau dengan asas-asas keadilan serta kepatutan, yang dianggap lebih kompetent ialah Raad van Justitie Semarang ataupun bila karenanya dalam perkara-perkara pidana oo Mas mean sep in tetapi hukum adat tidak akan diberlakukan apabila: Kanaan Saad Aipabiak Gemuoik aclna) SE ian 3 one slo JAM bentuk harapan-harapan bahwa: dalam fiend jika hal ini tidak atau tidak dapat dilakukan oleh 5 For pemerahan ian nian SESI sang Giaa dilan Juni Ai sebanding dengan kejahatannya ataupun tidak cukup berat 2). Akan diadakan';
+
+    const cleanedPage2 = cleanChunkForDisplay(noisyPage2ReaderText);
+    expect(cleanedPage2).not.toContain("thnggel merit hum cot meet");
+    expect(cleanedPage2).not.toContain("ia lo haha Aam atu pita");
+    expect(cleanedPage2).not.toContain("Kanaan Saad Aipabiak");
+    expect(cleanedPage2).toContain("b. CHARTER tahun 1804");
+    expect(cleanedPage2).toContain("\n1) ");
+    expect(cleanedPage2).toContain("\n2) ");
+
     // Language detection must distinguish Indonesian vs English
     expect(detectQueryLanguage("Apa saja yang diajarkan di pdf ini?")).toBe("id");
     expect(detectQueryLanguage("What are the main things taught in this pdf?")).toBe("en");

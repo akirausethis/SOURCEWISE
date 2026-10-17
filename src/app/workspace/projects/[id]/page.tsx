@@ -768,6 +768,136 @@ export default function ProjectWorkspacePage({
     );
   };
 
+  // Formats the Left-Pane Document Reader text ("EXTRACTED / OCR TEXT") with OCR cleanup, outline cards, blockquotes, and highlight matching
+  const renderFormattedReaderPageText = (
+    rawPageText: string,
+    highlightQuote: string | null
+  ) => {
+    if (!rawPageText) {
+      return <p className="text-[var(--ink-muted)] italic">Loading paper text...</p>;
+    }
+
+    const cleanedPageText = cleanChunkForDisplay(rawPageText) || rawPageText;
+    const cleanedHighlight = highlightQuote ? cleanChunkForDisplay(highlightQuote) : null;
+
+    const highlightInline = (lineStr: string) => {
+      const candidates = [cleanedHighlight, highlightQuote].filter(
+        (c): c is string => Boolean(c && c.trim().length > 8)
+      );
+      for (const cand of candidates) {
+        // Try full match or first 45-char prefix match
+        const snippet = lineStr.includes(cand)
+          ? cand
+          : cand.length > 40 && lineStr.includes(cand.slice(0, 40))
+            ? cand.slice(0, 40)
+            : null;
+        if (snippet && lineStr.includes(snippet)) {
+          return lineStr.split(snippet).map((part, idx, arr) => (
+            <span key={idx}>
+              {part}
+              {idx < arr.length - 1 && (
+                <mark className="rounded px-1.5 py-0.5 citation-target-highlight font-semibold text-[var(--ink-primary)]">
+                  {snippet}
+                </mark>
+              )}
+            </span>
+          ));
+        }
+      }
+      return lineStr;
+    };
+
+    const lines = cleanedPageText
+      .split(/\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    return (
+      <div className="space-y-3 font-sans-ui text-sm leading-relaxed text-[var(--ink-primary)]">
+        {lines.map((line, idx) => {
+          const mainNumMatch = line.match(/^(\d+)\.\s+(.*)$/);
+          const subLetterMatch = line.match(/^([a-z])\.\s+(.*)$/);
+          const subParenMatch = line.match(/^(\d+)\)\s+(.*)$/);
+          const isQuoteLine = /^["“].*["”]\.?$/.test(line) || line.startsWith('"');
+          const isAllCapsHeading =
+            idx === 0 &&
+            line.length < 110 &&
+            /^[A-Z0-9\s.,()-]+$/.test(line.replace(/Prof\.|Imam|Sudiyat/g, ""));
+
+          if (isAllCapsHeading) {
+            return (
+              <div
+                key={idx}
+                className="rounded-lg bg-[var(--surface-subtle)] border border-[var(--border-paper-strong)] px-3.5 py-2.5 font-editorial font-bold text-base text-[var(--ink-primary)]"
+              >
+                {highlightInline(line)}
+              </div>
+            );
+          }
+
+          if (mainNumMatch) {
+            return (
+              <div
+                key={idx}
+                className="flex items-start gap-2.5 rounded-lg bg-[var(--accent-sage-light)]/50 border border-[var(--accent-sage-border)] px-3.5 py-2 font-semibold text-[var(--ink-primary)] mt-2"
+              >
+                <span className="inline-flex h-5 min-w-[20px] px-1.5 shrink-0 items-center justify-center rounded bg-[var(--accent-sage-dark)] text-xs font-bold text-white font-mono-provenance mt-0.5">
+                  {mainNumMatch[1]}.
+                </span>
+                <span className="flex-1 leading-relaxed">{highlightInline(mainNumMatch[2])}</span>
+              </div>
+            );
+          }
+
+          if (subLetterMatch) {
+            return (
+              <div
+                key={idx}
+                className="flex items-start gap-2.5 rounded-lg bg-amber-50/70 border border-amber-200/90 px-3.5 py-2 font-semibold text-[var(--ink-primary)] ml-2"
+              >
+                <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded bg-amber-200/90 text-xs font-bold text-amber-950 font-mono-provenance mt-0.5">
+                  {subLetterMatch[1]}.
+                </span>
+                <span className="flex-1 leading-relaxed">{highlightInline(subLetterMatch[2])}</span>
+              </div>
+            );
+          }
+
+          if (subParenMatch) {
+            return (
+              <div
+                key={idx}
+                className="flex items-start gap-2.5 rounded-lg bg-white border border-[var(--border-paper)] px-3.5 py-2 text-[var(--ink-secondary)] ml-5 shadow-2xs"
+              >
+                <span className="inline-flex h-5 min-w-[22px] px-1 shrink-0 items-center justify-center rounded bg-[var(--surface-subtle)] border border-[var(--border-paper-strong)] font-mono-provenance text-xs font-bold text-[var(--accent-sage-dark)] mt-0.5">
+                  {subParenMatch[1]})
+                </span>
+                <span className="flex-1 leading-relaxed">{highlightInline(subParenMatch[2])}</span>
+              </div>
+            );
+          }
+
+          if (isQuoteLine) {
+            return (
+              <blockquote
+                key={idx}
+                className="ml-4 rounded-r-lg border-l-3 border-[var(--accent-sage-dark)] bg-[var(--accent-sage-light)]/35 px-4 py-2.5 font-editorial italic text-[var(--ink-primary)]"
+              >
+                {highlightInline(line)}
+              </blockquote>
+            );
+          }
+
+          return (
+            <p key={idx} className="text-[var(--ink-secondary)] leading-relaxed pl-1">
+              {highlightInline(line)}
+            </p>
+          );
+        })}
+      </div>
+    );
+  };
+
   // Upload Paper Submission (.pdf, .txt, .md, .tex) — Extracts & renders pages in Browser (with OCR for scanned PDFs)
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1376,31 +1506,22 @@ export default function ProjectWorkspacePage({
                       </div>
                     )}
 
-                  {/* Render Page Content with Passage Highlight */}
+                  {/* Render Page Content with Structured Formatting & Passage Highlight */}
                   {(readerViewMode !== "visual" || !activePage?.image_url) && (
-                    <div className="prose max-w-none text-[var(--ink-secondary)]">
+                    <div className="rounded-xl border border-[var(--border-paper-strong)] bg-white p-5 shadow-2xs space-y-3">
                       {activePage?.image_url && (
-                        <div className="mb-2 font-mono-provenance text-[10px] font-bold uppercase text-[var(--accent-sage-dark)]">
-                          Extracted / OCR Text (Page {currentPageNum}):
+                        <div className="flex items-center justify-between border-b border-[var(--border-paper)] pb-2">
+                          <span className="font-mono-provenance text-[10px] font-bold uppercase tracking-wider text-[var(--accent-sage-dark)]">
+                            📄 Extracted &amp; Cleaned Text (Page {currentPageNum})
+                          </span>
+                          <span className="font-mono-provenance text-[10px] text-[var(--ink-muted)]">
+                            Auto-Formatted Outline
+                          </span>
                         </div>
                       )}
-                      {highlightedText && activePage?.text_content.includes(highlightedText) ? (
-                        <div className="whitespace-pre-wrap">
-                          {activePage.text_content.split(highlightedText).map((part, i, arr) => (
-                            <span key={i}>
-                              {part}
-                              {i < arr.length - 1 && (
-                                <mark className="rounded px-1.5 py-0.5 citation-target-highlight font-semibold text-[var(--ink-primary)]">
-                                  {highlightedText}
-                                </mark>
-                              )}
-                            </span>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="whitespace-pre-wrap">
-                          {activePage?.text_content || "Loading paper text..."}
-                        </p>
+                      {renderFormattedReaderPageText(
+                        activePage?.text_content || "",
+                        highlightedText
                       )}
                     </div>
                   )}

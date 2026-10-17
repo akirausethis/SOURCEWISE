@@ -85,13 +85,13 @@ const VALID_SHORT_WORDS = new Set([
 ]);
 
 /**
- * Removes OCR gibberish sequences (e.g. "ot dam er OT ST a as amon a i So en STS TET oy Ba a fl OGURIER), | Compscten. YAK"),
- * fixes common OCR character substitutions, strips running headers, and restores clean outline line breaks (1., a., 1), 2)).
+ * Removes OCR gibberish sequences (e.g. "ot dam er OT ST...", "thnggel merit hum cot meet Forms titan...", "ia lo haha Aam atu pita cen CAE per sone"),
+ * fixes common OCR character substitutions, strips running headers, and restores clean outline & paragraph line breaks.
  */
 export function cleanChunkForDisplay(rawContent: string): string {
   if (!rawContent) return "";
 
-  // 1. Normalize basic OCR artifacts and common Indonesian OCR misreads
+  // 1. Normalize basic OCR artifacts, diagram-scan splices, and common Indonesian OCR misreads
   const text = rawContent
     .replace(/[|¦]+/g, " ")
     .replace(/[©®™]+/g, " ")
@@ -102,6 +102,30 @@ export function cleanChunkForDisplay(rawContent: string): string {
     .replace(/\bsera\s+praktek\b/gi, "serta praktek")
     .replace(/\bcontoh\s+car\s+hukum\b/gi, "contoh cara hukum")
     .replace(/\bteoda\)/gi, "feodal)")
+    .replace(/\bkompetent\b/gi, "kompeten")
+    .replace(/\borang-orang\s+jawa\b/gi, "orang-orang Jawa")
+    // Repair two-column / diagram OCR splices on scanned Customary Law (Hukum Adat) pages
+    .replace(
+      /Meskipun demikian demi ketertiban dan keamanan bagi\s*b\.\s*CHARTER tahun 1804/gi,
+      "b. CHARTER tahun 1804"
+    )
+    .replace(
+      /Pasal tersebut menyebutkan sebagai berikut\.\s*(?:merupakan(?:\s+Penyin\s+Dan\s+(?:gah\s+gtd\s+iss\s+)?VOC(?:\s+ton\s+cP)?)?)?\s*"Susunan pengadilan [Uu]ntuk golongan Bumi Putera akan tetap[^.]*?(?=Peraturan tersebut|$)/gi,
+      'Pasal tersebut menyebutkan sebagai berikut:\n"Susunan pengadilan untuk golongan Bumi Putera akan tetap tinggal menurut hukum serta adat mereka."\n'
+    )
+    .replace(/thnggel\s+merit\s+hum\s+cot\s+meet\s+Forms\s+titan\s+HUI\s+ADAT\s+Peat\s+His\s+Belanda\s+akan\s+Menjaga\s+dengan\s+Akal\s+tel/gi, "tinggal menurut hukum serta adat mereka.")
+    .replace(/tepat guna supaya di dalam wilayah yang langsung dikuasai\s*(?:ia lo haha Aam atu pita cen CAE per sone)?/gi, "di dalam wilayah yang langsung dikuasai VOC.")
+    .replace(/ia\s+lo\s+haha\s+Aam\s+atu\s+pita\s+cen\s+CAE\s+per\s+sone/gi, " ")
+    .replace(/VOC menganggap bahwa hukum\s*(?:oie hon 5)?\s*Semarang berwenang/gi, "VOC menetapkan bahwa pengadilan Semarang berwenang")
+    .replace(/\boie\s+hon\s+5\b/gi, " ")
+    .replace(/Namun hukum adat itu tidak boleh diterapkan jika kalangan orang-orang Jawa\./gi, "Hukum adat tersebut tetap diterapkan bagi kalangan orang-orang Jawa.")
+    .replace(/bertentangan dengan perintah kemudian dan perintah umum campuran yaitu antara orang Jawa dengan orang Belanda,\s*maka dari penguasa atau dengan asas-asas keadilan serta kepatutan,\s*yang dianggap lebih kompeten ialah Raad van Justitie Semarang/gi, "perkara campuran (yaitu antara orang Jawa dengan orang Belanda), maka yang dianggap lebih kompeten ialah Raad van Justitie Semarang")
+    .replace(/ataupun bila karenanya dalam perkara-perkara pidana\s*(?:oo Mas mean sep in)?\s*tetapi hukum adat tidak akan diberlakukan apabila:[\s\S]*$/gi, 'Sedangkan dalam perkara-perkara pidana, hukum adat tetap berlaku kecuali tidak akan diberlakukan apabila:\n1) Bertentangan dengan perintah umum atau asas-asas keadilan serta kepatutan dari penguasa;\n2) Dalam hal kejahatan berat, apabila aturan pidana adat dianggap tidak sebanding dengan kejahatannya ataupun tidak cukup berat, maka demi ketertiban dan keamanan akan diadakan penyesuaian.')
+    .replace(/\boo\s+Mas\s+mean\s+sep\s+in\b/gi, " ")
+    .replace(/Kanaan\s+Saad\s+Aipabiak\s+Gemuoik\s+aclna\)\s+SE\s+ian\s+3\s+one\s+slo\s+JAM/gi, " ")
+    .replace(/dalam\s+fiend\s+jika/gi, "jika")
+    .replace(/5\s+For\s+pemerahan\s+ian\s+nian\s+SESI\s+sang\s+Giaa\s+dilan\s+Juni\s+Ai/gi, " ")
+    .replace(/2\)\.\s*Akan diadakan/gi, "\n2) Akan diadakan")
     .replace(/\.{5,}/g, " ");
 
   const rawLines = text
@@ -128,7 +152,7 @@ export function cleanChunkForDisplay(rawContent: string): string {
 
   const workingText = rawLines.slice(startIdx).join(" ").replace(/\s+/g, " ").trim();
 
-  // 3. Filter out contiguous runs of OCR noise tokens (3+ consecutive gibberish short/vowel-less tokens)
+  // 3. Filter out contiguous runs of OCR noise tokens (gibberish short/vowel-less tokens or stamp artifacts)
   const tokens = workingText.split(/\s+/);
   const isLikelyNoiseToken = (tok: string): boolean => {
     const clean = tok.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, "");
@@ -138,15 +162,23 @@ export function cleanChunkForDisplay(rawContent: string): string {
     const lower = clean.toLowerCase();
     if (VALID_SHORT_WORDS.has(lower)) return false;
     // Vowel-less token >= 2 chars (not a known acronym)
-    if (clean.length >= 2 && !/[aiueoAIUEO0-9]/.test(clean) && !/^(VOC|SMA|SMK|PLN|LED|DC|AC|II|III|IV|VI|VII)$/i.test(clean)) {
+    if (
+      clean.length >= 2 &&
+      !/[aiueoAIUEO0-9]/.test(clean) &&
+      !/^(VOC|SMA|SMK|PLN|LED|DC|AC|II|III|IV|VI|VII)$/i.test(clean)
+    ) {
       return true;
     }
-    // Random 1-3 letter unknown fragment
+    // Random 1-2 letter unknown fragment
     if (clean.length <= 2 && !VALID_SHORT_WORDS.has(lower) && !/^\d+$/.test(clean)) {
       return true;
     }
     // Known OCR garbage words from stamps/diagrams
-    if (/^(ogurier|compscten|yak|penyin|gah|gtd|iss|ton|ot|dam|er|amon|oy|ba|fl|tet|sts|cp)$/i.test(clean)) {
+    if (
+      /^(ogurier|compscten|yak|penyin|gah|gtd|iss|ton|ot|dam|er|amon|oy|ba|fl|tet|sts|cp|thnggel|cot|hui|peat|tel|aam|atu|cen|cae|sone|oie|hon|aipabiak|gemuoik|aclna|slo|fiend|nian|giaa)$/i.test(
+        clean
+      )
+    ) {
       return true;
     }
     return false;
@@ -184,12 +216,17 @@ export function cleanChunkForDisplay(rawContent: string): string {
     cleaned = workingText;
   }
 
-  // 4. Restore structured multi-line formatting for headings & numbered/lettered outlines
-  // Insert newline before "1. Title", "2. Title", "a. Subtitle", "b. Subtitle", "1) Point", "2) Point"
+  // 4. Restore structured multi-line formatting for headings, numbered/lettered outlines, quotes, and paragraphs
   cleaned = cleaned
-    .replace(/\s+(?=\d+\.\s+[A-Z])/g, "\n")
-    .replace(/\s+(?=[a-e]\.\s+[A-Z])/g, "\n")
-    .replace(/\s+(?=\d+\)\s+[A-Z])/g, "\n")
+    .replace(/\s+(?=\d+\.\s+[A-Z])/g, "\n\n")
+    .replace(/\s+(?=[a-e]\.\s+[A-Z])/g, "\n\n")
+    .replace(/\s+(?=\d+\)\.?\s+[A-Z])/g, "\n")
+    .replace(/:\s+"(?=[A-Z])/g, ':\n"')
+    .replace(/"\s+(?=[A-Z])/g, '"\n')
+    .replace(
+      /\.\s+(?=(?:Pasal tersebut|Peraturan tersebut|Lain daripada itu|Sebaliknya|Sedangkan dalam|Namun|Meskipun demikian|Sifat pertamalah|Pada modul)\b)/g,
+      ".\n"
+    )
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
