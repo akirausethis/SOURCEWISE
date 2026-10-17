@@ -181,9 +181,24 @@ export function extractMetadataClient(
     }
   }
 
+  const cleanTitle = (title || cleanFileName || "Uploaded Document")
+    .replace(/^[|¦\s•\-–—]+/, "")
+    .replace(/[|¦\s]+$/, "")
+    .replace(/\s*\([^)]*S\.H\.[^)]*\)\s*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const cleanAuthors = (authors.length > 0 ? authors : ["Document Author"]).map(
+    (a) =>
+      a
+        .replace(/^[|¦(\s]+/, "")
+        .replace(/[|¦)\s]+$/, "")
+        .trim() || "Document Author"
+  );
+
   return {
-    title: title || cleanFileName || "Uploaded Document",
-    authors: authors.length > 0 ? authors : ["Document Author"],
+    title: cleanTitle || cleanFileName || "Uploaded Document",
+    authors: cleanAuthors,
     publication_year,
     journal_or_venue,
     doi,
@@ -331,11 +346,11 @@ export async function extractDocumentInBrowser(
 
       totalExtractedChars += pageText.length;
 
-      // 2. Render visual PDF page onto canvas in browser (up to 35 pages) so the user always sees their REAL PDF
+      // 2. Render visual PDF page onto canvas in browser (up to 60 pages) so the user always sees their REAL PDF on every page
       let pageImageUrl: string | undefined;
-      if (typeof document !== "undefined" && pageNum <= 35) {
+      if (typeof document !== "undefined" && pageNum <= 60) {
         try {
-          const viewport = page.getViewport({ scale: 1.25 });
+          const viewport = page.getViewport({ scale: 1.15 });
           const canvas = document.createElement("canvas");
           canvas.width = viewport.width;
           canvas.height = viewport.height;
@@ -346,7 +361,7 @@ export async function extractDocumentInBrowser(
               canvasContext: ctx,
               viewport,
             }).promise;
-            pageImageUrl = canvas.toDataURL("image/jpeg", 0.68);
+            pageImageUrl = canvas.toDataURL("image/jpeg", 0.65);
           }
         } catch (renderErr) {
           console.warn(`Canvas render skipped for page ${pageNum}:`, renderErr);

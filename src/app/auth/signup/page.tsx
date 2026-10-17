@@ -3,7 +3,8 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { BookOpen, ArrowRight, ShieldCheck, AlertCircle } from "lucide-react";
+import { BookOpen, ArrowRight, ShieldCheck, AlertCircle, CheckCircle } from "lucide-react";
+import { registerUserAccount } from "@/lib/storage/account-storage";
 
 export default function SignupPage() {
   const router = useRouter();
@@ -21,7 +22,20 @@ export default function SignupPage() {
     setError(null);
 
     try {
-      const res = await fetch("/api/auth", {
+      const localResult = await registerUserAccount({
+        email,
+        password,
+        full_name: fullName,
+        institution,
+        research_field: researchField,
+      });
+
+      if (localResult.error) {
+        throw new Error(localResult.error);
+      }
+
+      // Also sync with server API in background
+      fetch("/api/auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -32,12 +46,7 @@ export default function SignupPage() {
           institution,
           research_field: researchField,
         }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Failed to create account");
-      }
+      }).catch(() => {});
 
       router.push("/workspace");
     } catch (err: unknown) {
@@ -58,16 +67,23 @@ export default function SignupPage() {
             SOURCEWISE
           </span>
         </Link>
-        <h2 className="mt-4 font-editorial text-xl font-bold text-[var(--ink-primary)]">
-          Create Scholar Account
+        <h2 className="mt-4 font-editorial text-2xl font-bold text-[var(--ink-primary)]">
+          Create Your Free Account
         </h2>
         <p className="mt-1 text-xs text-[var(--ink-secondary)]">
-          Join students and researchers building verifiable literature syntheses.
+          Save your uploaded PDFs, all extracted pages, AI chats, and study notes permanently so they never disappear when you close the browser.
         </p>
       </div>
 
-      <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
+      <div className="mt-6 sm:mx-auto sm:w-full sm:max-w-md">
         <div className="rounded-xl border border-[var(--border-paper-strong)] bg-white p-8 shadow-sm">
+          <div className="mb-5 flex items-start gap-2 rounded-lg border border-[var(--accent-sage-border)] bg-[var(--accent-sage-light)]/50 p-3 text-xs text-[var(--accent-sage-dark)]">
+            <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" />
+            <span>
+              <strong>Instant Demo Migration:</strong> Any PDFs or project folders you already uploaded in Demo Mode will be automatically saved to your new account!
+            </span>
+          </div>
+
           {error && (
             <div className="mb-4 flex items-center gap-2 rounded border border-red-200 bg-red-50 p-3 text-xs text-red-700">
               <AlertCircle className="h-4 w-4 shrink-0" />
@@ -81,7 +97,7 @@ export default function SignupPage() {
                 htmlFor="fullName"
                 className="block font-mono-provenance text-xs font-medium text-[var(--ink-primary)]"
               >
-                Full Name
+                Your Name *
               </label>
               <input
                 id="fullName"
@@ -90,7 +106,7 @@ export default function SignupPage() {
                 value={fullName}
                 onChange={(e) => setFullName(e.target.value)}
                 className="mt-1 block w-full rounded border border-[var(--border-paper)] bg-white px-3 py-2 text-xs text-[var(--ink-primary)] focus:border-[var(--accent-sage)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-sage)]"
-                placeholder="e.g. Maya Lin"
+                placeholder="e.g. Budi Santoso / Maya Lin"
               />
             </div>
 
@@ -99,7 +115,7 @@ export default function SignupPage() {
                 htmlFor="email"
                 className="block font-mono-provenance text-xs font-medium text-[var(--ink-primary)]"
               >
-                Institutional Email
+                Email Address *
               </label>
               <input
                 id="email"
@@ -108,42 +124,44 @@ export default function SignupPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className="mt-1 block w-full rounded border border-[var(--border-paper)] bg-white px-3 py-2 text-xs text-[var(--ink-primary)] focus:border-[var(--accent-sage)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-sage)]"
-                placeholder="scholar@university.edu"
+                placeholder="you@example.com"
               />
             </div>
 
-            <div>
-              <label
-                htmlFor="institution"
-                className="block font-mono-provenance text-xs font-medium text-[var(--ink-primary)]"
-              >
-                University or Research Institution
-              </label>
-              <input
-                id="institution"
-                type="text"
-                value={institution}
-                onChange={(e) => setInstitution(e.target.value)}
-                className="mt-1 block w-full rounded border border-[var(--border-paper)] bg-white px-3 py-2 text-xs text-[var(--ink-primary)] focus:border-[var(--accent-sage)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-sage)]"
-                placeholder="e.g. Stanford University"
-              />
-            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label
+                  htmlFor="institution"
+                  className="block font-mono-provenance text-xs font-medium text-[var(--ink-primary)]"
+                >
+                  School / University (Optional)
+                </label>
+                <input
+                  id="institution"
+                  type="text"
+                  value={institution}
+                  onChange={(e) => setInstitution(e.target.value)}
+                  className="mt-1 block w-full rounded border border-[var(--border-paper)] bg-white px-3 py-2 text-xs text-[var(--ink-primary)] focus:border-[var(--accent-sage)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-sage)]"
+                  placeholder="e.g. Universitas Indonesia"
+                />
+              </div>
 
-            <div>
-              <label
-                htmlFor="field"
-                className="block font-mono-provenance text-xs font-medium text-[var(--ink-primary)]"
-              >
-                Research Field / Topic Scope
-              </label>
-              <input
-                id="field"
-                type="text"
-                value={researchField}
-                onChange={(e) => setResearchField(e.target.value)}
-                className="mt-1 block w-full rounded border border-[var(--border-paper)] bg-white px-3 py-2 text-xs text-[var(--ink-primary)] focus:border-[var(--accent-sage)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-sage)]"
-                placeholder="e.g. Applied Machine Learning & Education"
-              />
+              <div>
+                <label
+                  htmlFor="field"
+                  className="block font-mono-provenance text-xs font-medium text-[var(--ink-primary)]"
+                >
+                  Study Major / Topic (Optional)
+                </label>
+                <input
+                  id="field"
+                  type="text"
+                  value={researchField}
+                  onChange={(e) => setResearchField(e.target.value)}
+                  className="mt-1 block w-full rounded border border-[var(--border-paper)] bg-white px-3 py-2 text-xs text-[var(--ink-primary)] focus:border-[var(--accent-sage)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-sage)]"
+                  placeholder="e.g. Hukum / Fisika / AI"
+                />
+              </div>
             </div>
 
             <div>
@@ -151,12 +169,13 @@ export default function SignupPage() {
                 htmlFor="password"
                 className="block font-mono-provenance text-xs font-medium text-[var(--ink-primary)]"
               >
-                Password
+                Password (min. 4 characters) *
               </label>
               <input
                 id="password"
                 type="password"
                 required
+                minLength={4}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="mt-1 block w-full rounded border border-[var(--border-paper)] bg-white px-3 py-2 text-xs text-[var(--ink-primary)] focus:border-[var(--accent-sage)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-sage)]"
@@ -165,25 +184,25 @@ export default function SignupPage() {
             </div>
 
             <div className="flex items-center justify-between text-xs pt-1">
-              <span className="text-[var(--ink-muted)]">Already registered?</span>
+              <span className="text-[var(--ink-muted)]">Already have an account?</span>
               <Link
                 href="/auth/login"
-                className="font-medium text-[var(--accent-sage-dark)] hover:underline"
+                className="font-semibold text-[var(--accent-sage-dark)] hover:underline"
               >
-                Sign in
+                Sign in here →
               </Link>
             </div>
 
             <button
               type="submit"
               disabled={loading}
-              className="mt-2 flex w-full items-center justify-center gap-1.5 rounded border border-[var(--accent-sage-dark)] bg-[var(--accent-sage-dark)] px-4 py-2.5 text-xs font-semibold text-white shadow-sm transition hover:bg-[var(--accent-sage)] disabled:opacity-50"
+              className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--accent-sage-dark)] bg-[var(--accent-sage-dark)] px-4 py-2.5 text-xs font-semibold text-white shadow-sm transition hover:bg-[var(--accent-sage)] disabled:opacity-50 cursor-pointer"
             >
               {loading ? (
-                <span>Creating Scholar Workspace...</span>
+                <span>Creating Account &amp; Saving Data...</span>
               ) : (
                 <>
-                  <span>Create Account & Start Research</span>
+                  <span>Create Account &amp; Save My Workspace</span>
                   <ArrowRight className="h-3.5 w-3.5" />
                 </>
               )}
@@ -193,7 +212,7 @@ export default function SignupPage() {
           <div className="mt-6 border-t border-[var(--border-paper)] pt-4 text-center">
             <div className="flex items-center justify-center gap-1.5 text-[11px] text-[var(--ink-muted)] font-mono-provenance">
               <ShieldCheck className="h-3.5 w-3.5 text-[var(--accent-sage)]" />
-              <span>Zero telemetry on private research notes or PDFs</span>
+              <span>Permanent account storage • Zero data loss on tab close</span>
             </div>
           </div>
         </div>

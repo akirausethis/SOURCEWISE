@@ -4,14 +4,15 @@ import { useState, useEffect } from "react";
 import { Navbar } from "@/components/layout/Navbar";
 import { ShieldCheck, User, Sparkles, Database, Trash2, CheckCircle, Key } from "lucide-react";
 import { DEFAULT_USER } from "@/lib/data/store";
+import { getActiveSessionUser, setActiveSessionUser } from "@/lib/storage/account-storage";
 
 export default function SettingsPage() {
-  const [fullName, setFullName] = useState(DEFAULT_USER.full_name || "Elena Rostova");
+  const [fullName, setFullName] = useState(DEFAULT_USER.full_name || "Guest Demo Student");
   const [institution, setInstitution] = useState(
-    DEFAULT_USER.institution || "Oxford Institute of Cognitive Sciences"
+    DEFAULT_USER.institution || "University Study Desk"
   );
   const [researchField, setResearchField] = useState(
-    DEFAULT_USER.research_field || "Human-AI Alignment & Pedagogical Synthesis"
+    DEFAULT_USER.research_field || "General Study & Research"
   );
   const [geminiKey, setGeminiKey] = useState("");
   const [saved, setSaved] = useState(false);
@@ -20,6 +21,12 @@ export default function SettingsPage() {
     if (typeof window !== "undefined") {
       const storedKey = localStorage.getItem("sourcewise_gemini_key") || "";
       setGeminiKey(storedKey);
+      const activeUser = getActiveSessionUser();
+      if (activeUser) {
+        setFullName(activeUser.full_name);
+        setInstitution(activeUser.institution);
+        setResearchField(activeUser.research_field);
+      }
     }
   }, []);
 
@@ -31,14 +38,23 @@ export default function SettingsPage() {
       } else {
         localStorage.removeItem("sourcewise_gemini_key");
       }
+      const activeUser = getActiveSessionUser();
+      if (activeUser) {
+        setActiveSessionUser({
+          ...activeUser,
+          full_name: fullName,
+          institution,
+          research_field: researchField,
+        });
+      }
     }
     setSaved(true);
     setTimeout(() => setSaved(false), 3000);
   };
 
   const handleClearCache = () => {
-    if (confirm("Are you sure you want to reset your local research workspace cache?")) {
-      localStorage.clear();
+    if (confirm("Are you sure you want to reset your temporary Demo workspace cache?")) {
+      sessionStorage.clear();
       window.location.reload();
     }
   };

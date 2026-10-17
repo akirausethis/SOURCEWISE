@@ -16,10 +16,22 @@ import {
   Upload,
   MessageSquare,
   Columns,
+  UserCheck,
+  UserPlus,
+  LogIn,
 } from "lucide-react";
 import { ResearchProject, AcademicPaper, ResearchNote } from "@/types";
+import {
+  ActiveSessionUser,
+  getActiveSessionUser,
+  loadWorkspaceBundle,
+  saveWorkspaceBundle,
+  deduplicatePapers,
+  deduplicateProjects,
+} from "@/lib/storage/account-storage";
 
 export default function WorkspaceDashboard() {
+  const [activeUser, setActiveUser] = useState<ActiveSessionUser | null>(null);
   const [projects, setProjects] = useState<ResearchProject[]>([]);
   const [papers, setPapers] = useState<AcademicPaper[]>([]);
   const [notes, setNotes] = useState<ResearchNote[]>([]);
@@ -31,50 +43,53 @@ export default function WorkspaceDashboard() {
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
-    // Load projects from API + merge any custom projects from localStorage
-    fetch("/api/projects")
-      .then((res) => res.json())
-      .then((data) => {
-        const apiProjects: ResearchProject[] = data.projects || [];
-        let customProjects: ResearchProject[] = [];
-        try {
-          const saved = localStorage.getItem("sourcewise_custom_projects");
-          if (saved) customProjects = JSON.parse(saved);
-        } catch {
-          // ignore storage errors
-        }
-        const mergedMap = new Map<string, ResearchProject>();
-        for (const p of [...customProjects, ...apiProjects]) {
-          if (!mergedMap.has(p.id)) mergedMap.set(p.id, p);
-        }
-        setProjects(Array.from(mergedMap.values()));
-      });
+    let isMounted = true;
 
-    // Load papers
-    fetch("/api/papers")
-      .then((res) => res.json())
-      .then((data) => {
-        const apiPapers: AcademicPaper[] = data.papers || [];
-        let customPapers: AcademicPaper[] = [];
-        try {
-          const saved = localStorage.getItem("sourcewise_custom_papers");
-          if (saved) customPapers = JSON.parse(saved);
-        } catch {
-          // ignore
-        }
-        const mergedMap = new Map<string, AcademicPaper>();
-        for (const p of [...customPapers, ...apiPapers]) {
-          if (!mergedMap.has(p.id)) mergedMap.set(p.id, p);
-        }
-        setPapers(Array.from(mergedMap.values()));
-      });
+    const loadAllData = async () => {
+      const currentUser = getActiveSessionUser();
+      if (isMounted) setActiveUser(currentUser);
 
-    // Load notes
-    fetch("/api/notes?projectId=proj_pedagogy_ai")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.notes) setNotes(data.notes);
-      });
+      const bundle = await loadWorkspaceBundle();
+
+      // Load projects from API + merge bundle projects
+      try {
+        const projRes = await fetch("/api/projects");
+        const projData = await projRes.json();
+        const apiProjects: ResearchProject[] = projData.projects || [];
+        const mergedProjects = deduplicateProjects([...bundle.projects, ...apiProjects]);
+        if (isMounted) setProjects(mergedProjects);
+      } catch {
+        if (isMounted) setProjects(bundle.projects);
+      }
+
+      // Load papers from API + merge bundle papers
+      try {
+        const papRes = await fetch("/api/papers");
+        const papData = await papRes.json();
+        const apiPapers: AcademicPaper[] = papData.papers || [];
+        const mergedPapers = deduplicatePapers([...bundle.papers, ...apiPapers]);
+        if (isMounted) setPapers(mergedPapers);
+      } catch {
+        if (isMounted) setPapers(bundle.papers);
+      }
+
+      // Load notes
+      try {
+        const noteRes = await fetch("/api/notes?projectId=proj_pedagogy_ai");
+        const noteData = await noteRes.json();
+        const apiNotes: ResearchNote[] = noteData.notes || [];
+        if (isMounted) setNotes([...bundle.notes, ...apiNotes]);
+      } catch {
+        if (isMounted) setNotes(bundle.notes);
+      }
+    };
+
+    loadAllData();
+    window.addEventListener("sourcewise-auth-changed", loadAllData);
+    return () => {
+      isMounted = false;
+      window.removeEventListener("sourcewise-auth-changed", loadAllData);
+    };
   }, []);
 
   const handleCreateProject = async (e: React.FormEvent) => {
@@ -94,21 +109,13 @@ export default function WorkspaceDashboard() {
       });
       const data = await res.json();
       if (data.project) {
-        setProjects((prev) => {
-          const updated = [data.project, ...prev];
-          try {
-            const existingCustom = JSON.parse(
-              localStorage.getItem("sourcewise_custom_projects") || "[]"
-            );
-            localStorage.setItem(
-              "sourcewise_custom_projects",
-              JSON.stringify([data.project, ...existingCustom])
-            );
-          } catch {
-            // ignore
-          }
-          return updated;
+        const bundle = await loadWorkspaceBundle();
+        const updatedCustomProjects = deduplicateProjects([data.project, ...bundle.projects]);
+        await saveWorkspaceBundle({
+          ...bundle,
+          projects: updatedCustomProjects,
         });
+        setProjects((prev) => deduplicateProjects([data.project, ...prev]));
         setShowNewProjectModal(false);
         setNewTitle("");
         setNewQuestion("");
@@ -132,6 +139,43 @@ export default function WorkspaceDashboard() {
       <Navbar />
 
       <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8 sm:py-10">
+        {/* Account Persistence Status Banner */}
+        {activeUser ? (
+          <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-[var(--accent-sage-border)] bg-[var(--accent-sage-light)]/60 px-4 py-3 text-xs text-[var(--accent-sage-dark)]">
+            <div className="flex items-center gap-2">
+              <UserCheck className="h-4 w-4 shrink-0" />
+              <span>
+                <strong>Logged in as {activeUser.full_name} ({activeUser.email}):</strong> All your uploaded PDFs, all extracted pages, AI chats, and project folders are permanently saved to your account!
+              </span>
+            </div>
+            <span className="font-mono-provenance text-[10px] font-bold uppercase bg-white/80 px-2.5 py-1 rounded border border-[var(--accent-sage-border)] shrink-0">
+              ✓ Auto-Save Active
+            </span>
+          </div>
+        ) : (
+          <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50/90 px-4 py-3 text-xs text-amber-950">
+            <div>
+              <strong>🧪 Guest Demo Mode (Temporary Session):</strong> Any PDFs or folders you add right now will reset when you close the browser tab. Want to keep your work permanently? Create a free account!
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <Link
+                href="/auth/login"
+                className="inline-flex items-center gap-1 rounded border border-amber-400 bg-white px-3 py-1.5 text-xs font-semibold text-amber-950 hover:bg-amber-100 transition"
+              >
+                <LogIn className="h-3.5 w-3.5" />
+                <span>Sign In</span>
+              </Link>
+              <Link
+                href="/auth/signup"
+                className="inline-flex items-center gap-1 rounded border border-[var(--accent-sage-dark)] bg-[var(--accent-sage-dark)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--accent-sage)] transition"
+              >
+                <UserPlus className="h-3.5 w-3.5" />
+                <span>+ Create Account (Save My Data)</span>
+              </Link>
+            </div>
+          </div>
+        )}
+
         {/* Friendly Header */}
         <div className="flex flex-col md:flex-row md:items-end justify-between border-b border-[var(--border-paper)] pb-6 gap-4">
           <div>

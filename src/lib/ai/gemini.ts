@@ -104,6 +104,12 @@ export function cleanChunkForDisplay(rawContent: string): string {
     .replace(/\bteoda\)/gi, "feodal)")
     .replace(/\bkompetent\b/gi, "kompeten")
     .replace(/\borang-orang\s+jawa\b/gi, "orang-orang Jawa")
+    .replace(/\biain\s+pajak\b/gi, "lain pajak")
+    .replace(/\bSeperti\s+hainya\b/gi, "Seperti halnya")
+    .replace(/\bnuk\s+Islam\b/gi, "hukum Islam")
+    .replace(/\bTend\s+hukum\s+adat\s+ibu\b/gi, "hukum adat itu")
+    .replace(/\bBdak\s+pantas\b/gi, "tidak pantas")
+    .replace(/\bperaturan\s+peraturan\b/gi, "peraturan-peraturan")
     // Repair two-column / diagram OCR splices on scanned Customary Law (Hukum Adat) pages
     .replace(
       /Meskipun demikian demi ketertiban dan keamanan bagi\s*b\.\s*CHARTER tahun 1804/gi,

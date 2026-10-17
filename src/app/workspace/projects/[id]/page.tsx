@@ -42,6 +42,12 @@ import {
 } from "@/types";
 import { extractDocumentInBrowser } from "@/lib/pdf/client-extractor";
 import { cleanChunkForDisplay, detectQueryLanguage } from "@/lib/ai/gemini";
+import {
+  loadWorkspaceBundle,
+  saveWorkspaceBundle,
+  deduplicatePapers,
+  sanitizePaperMetadata,
+} from "@/lib/storage/account-storage";
 
 async function safeJsonResponse<T = Record<string, unknown>>(res: Response): Promise<T> {
   const rawText = await res.text();
@@ -168,134 +174,99 @@ export default function ProjectWorkspacePage({
     }
   };
 
-  // Load project, papers, and localStorage state on mount
+  // Load project, papers, and IndexedDB/account state on mount
   useEffect(() => {
-    let localPapers: AcademicPaper[] = [];
-    let localPages: DocumentPage[] = [];
-    let localChunks: DocumentChunk[] = [];
-    let localProjects: ResearchProject[] = [];
+    let isMounted = true;
 
-    try {
-      const rawPapers: AcademicPaper[] = JSON.parse(localStorage.getItem("sourcewise_custom_papers") || "[]");
-      const rawPages: DocumentPage[] = JSON.parse(localStorage.getItem("sourcewise_custom_pages") || "[]");
-      const rawChunks: DocumentChunk[] = JSON.parse(localStorage.getItem("sourcewise_custom_chunks") || "[]");
-      localProjects = JSON.parse(localStorage.getItem("sourcewise_custom_projects") || "[]");
+    const initWorkspace = async () => {
+      const bundle = await loadWorkspaceBundle();
+      if (!isMounted) return;
 
-      // Auto-clean any legacy corrupted %PDF- binary, detached-buffer, or fake fallback template entries from localStorage
-      const isCorruptedPDFText = (str?: string) =>
-        Boolean(
-          str &&
-            (str.includes("%PDF-") ||
-              str.includes("<</Type/Catalog") ||
-              str.includes("<</Type/Page") ||
-              str.includes("/FontDescriptor") ||
-              str.includes("stream JFIF") ||
-              str.includes("Document text extracted from source.") ||
-              str.includes("## Page 2: Theoretical Framework & Related Literature") ||
-              str.includes("originate from core principles of formal analysis and domain modeling"))
-        );
+      const projectLocalPapers = deduplicatePapers(
+        bundle.projects.some((pr) => pr.id === projectId)
+          ? bundle.papers.filter((p) => p.project_id === projectId)
+          : bundle.papers.filter((p) => p.project_id === projectId)
+      );
 
-      const corruptedDocIds = new Set<string>();
-      for (const p of rawPapers) {
-        if (isCorruptedPDFText(p.title)) corruptedDocIds.add(p.id);
-      }
-      for (const pg of rawPages) {
-        if (isCorruptedPDFText(pg.text_content)) corruptedDocIds.add(pg.document_id);
+      setCustomPapers(projectLocalPapers);
+      setCustomPages(bundle.pages);
+      setCustomChunks(bundle.chunks);
+
+      if (bundle.chatsByProject[projectId] && bundle.chatsByProject[projectId].length > 0) {
+        setChatMessages(bundle.chatsByProject[projectId]);
       }
 
-      if (corruptedDocIds.size > 0) {
-        localPapers = rawPapers.filter((p) => !corruptedDocIds.has(p.id));
-        localPages = rawPages.filter((pg) => !corruptedDocIds.has(pg.document_id));
-        localChunks = rawChunks.filter((c) => !corruptedDocIds.has(c.document_id));
-      } else {
-        localPapers = rawPapers;
-        localPages = rawPages;
-        localChunks = rawChunks;
-      }
+      fetch("/api/projects")
+        .then((res) => res.json())
+        .then((data) => {
+          if (!isMounted) return;
+          const allProjs = [...bundle.projects, ...(data.projects || [])];
+          const found = allProjs.find((p: ResearchProject) => p.id === projectId);
+          if (found) setProject(found);
+        });
 
-      // Also clean any OCR noise / squished outline lines on stored pages & chunks
-      localPages = localPages.map((pg) => ({
-        ...pg,
-        text_content: cleanChunkForDisplay(pg.text_content) || pg.text_content,
-      }));
-      localChunks = localChunks.map((chk) => ({
-        ...chk,
-        content: cleanChunkForDisplay(chk.content) || chk.content,
-      }));
-      localStorage.setItem("sourcewise_custom_papers", JSON.stringify(localPapers));
-      localStorage.setItem("sourcewise_custom_pages", JSON.stringify(localPages));
-      localStorage.setItem("sourcewise_custom_chunks", JSON.stringify(localChunks));
-    } catch {
-      // ignore storage parse errors
-    }
+      fetch(`/api/papers?projectId=${projectId}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (!isMounted) return;
+          const serverPapers: AcademicPaper[] = (data.papers || []).map(sanitizePaperMetadata);
+          const mergedList = deduplicatePapers([...projectLocalPapers, ...serverPapers]);
+          setPapers(mergedList);
+          if (mergedList.length > 0) {
+            setSelectedPaper(mergedList[0]);
+          }
+        });
 
-    const projectLocalPapers = localPapers.filter((p) => p.project_id === projectId);
-    setCustomPapers(projectLocalPapers);
-    setCustomPages(localPages);
-    setCustomChunks(localChunks);
+      // Load initial comparison & gaps (including any custom uploaded papers)
+      syncProjectSyntheses(projectLocalPapers, bundle.chunks);
 
-    fetch("/api/projects")
-      .then((res) => res.json())
-      .then((data) => {
-        const allProjs = [...localProjects, ...(data.projects || [])];
-        const found = allProjs.find((p: ResearchProject) => p.id === projectId);
-        if (found) setProject(found);
-      });
+      // Load canvas
+      fetch(`/api/canvas?projectId=${projectId}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (!isMounted) return;
+          if (data.canvas) {
+            const baseCanvas: ResearchCanvasData = data.canvas;
+            const existingNodeIds = new Set(baseCanvas.nodes.map((n) => n.id));
+            const extraNodes: CanvasNode[] = [];
+            projectLocalPapers.forEach((p, idx) => {
+              const nodeId = `node_${p.id}`;
+              if (!existingNodeIds.has(nodeId)) {
+                extraNodes.push({
+                  id: nodeId,
+                  type: "paper",
+                  label: p.title,
+                  description: `Uploaded Paper • ${p.authors[0] || "Author"} (${p.publication_year || 2025})`,
+                  x: 160 + ((idx + 3) % 3) * 310,
+                  y: 260 + Math.floor((idx + 3) / 3) * 160,
+                  document_id: p.id,
+                });
+              }
+            });
+            setCanvasData({
+              ...baseCanvas,
+              nodes: [...baseCanvas.nodes, ...extraNodes],
+            });
+          }
+        });
 
-    fetch(`/api/papers?projectId=${projectId}`)
-      .then((res) => res.json())
-      .then((data) => {
-        const serverPapers: AcademicPaper[] = data.papers || [];
-        const mergedMap = new Map<string, AcademicPaper>();
-        for (const p of [...projectLocalPapers, ...serverPapers]) {
-          if (!mergedMap.has(p.id)) mergedMap.set(p.id, p);
-        }
-        const mergedList = Array.from(mergedMap.values());
-        setPapers(mergedList);
-        if (mergedList.length > 0) {
-          setSelectedPaper(mergedList[0]);
-        }
-      });
+      // Load notes
+      fetch(`/api/notes?projectId=${projectId}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (!isMounted) return;
+          const serverNotes: ResearchNote[] = data.notes || [];
+          const customProjectNotes = bundle.notes.filter((n) => n.project_id === projectId);
+          setNotes([...customProjectNotes, ...serverNotes]);
+        });
+    };
 
-    // Load initial comparison & gaps (including any custom uploaded papers)
-    syncProjectSyntheses(projectLocalPapers, localChunks);
-
-    // Load canvas
-    fetch(`/api/canvas?projectId=${projectId}`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.canvas) {
-          const baseCanvas: ResearchCanvasData = data.canvas;
-          // Ensure any custom uploaded papers also appear as nodes on the visual map
-          const existingNodeIds = new Set(baseCanvas.nodes.map((n) => n.id));
-          const extraNodes: CanvasNode[] = [];
-          projectLocalPapers.forEach((p, idx) => {
-            const nodeId = `node_${p.id}`;
-            if (!existingNodeIds.has(nodeId)) {
-              extraNodes.push({
-                id: nodeId,
-                type: "paper",
-                label: p.title,
-                description: `Uploaded Paper • ${p.authors[0] || "Author"} (${p.publication_year || 2025})`,
-                x: 160 + ((idx + 3) % 3) * 310,
-                y: 260 + Math.floor((idx + 3) / 3) * 160,
-                document_id: p.id,
-              });
-            }
-          });
-          setCanvasData({
-            ...baseCanvas,
-            nodes: [...baseCanvas.nodes, ...extraNodes],
-          });
-        }
-      });
-
-    // Load notes
-    fetch(`/api/notes?projectId=${projectId}`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.notes) setNotes(data.notes);
-      });
+    initWorkspace();
+    window.addEventListener("sourcewise-auth-changed", initWorkspace);
+    return () => {
+      isMounted = false;
+      window.removeEventListener("sourcewise-auth-changed", initWorkspace);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
@@ -354,13 +325,14 @@ export default function ProjectWorkspacePage({
       });
   }, [selectedPaper, customPages]);
 
-  // Helper to persist newly added paper + pages + chunks in state & localStorage
+  // Helper to persist newly added paper + ALL pages (including all page images 1..N) + chunks in IndexedDB
   const registerNewPaperData = (
-    newPaper: AcademicPaper,
+    rawNewPaper: AcademicPaper,
     newPages: DocumentPage[],
     newChunks: DocumentChunk[]
   ) => {
-    const updatedCustomPapers = [newPaper, ...customPapers];
+    const newPaper = sanitizePaperMetadata(rawNewPaper);
+    const updatedCustomPapers = deduplicatePapers([newPaper, ...customPapers]);
     const updatedCustomPages = [...customPages, ...newPages];
     const updatedCustomChunks = [...customChunks, ...newChunks];
 
@@ -368,32 +340,18 @@ export default function ProjectWorkspacePage({
     setCustomPages(updatedCustomPages);
     setCustomChunks(updatedCustomChunks);
 
-    try {
-      const allStoredPapers: AcademicPaper[] = JSON.parse(
-        localStorage.getItem("sourcewise_custom_papers") || "[]"
-      );
-      localStorage.setItem(
-        "sourcewise_custom_papers",
-        JSON.stringify([newPaper, ...allStoredPapers])
-      );
-      // Keep localStorage lightweight (<4MB) by omitting heavy base64 page images beyond page 2
-      const storageSafePages = updatedCustomPages.map((pg) =>
-        pg.page_number <= 2 ? pg : { ...pg, image_url: undefined }
-      );
-      localStorage.setItem("sourcewise_custom_pages", JSON.stringify(storageSafePages));
-      localStorage.setItem("sourcewise_custom_chunks", JSON.stringify(updatedCustomChunks));
-    } catch {
-      // If quota exceeded with images, store text-only pages in localStorage
-      try {
-        const textOnlyPages = updatedCustomPages.map((pg) => ({ ...pg, image_url: undefined }));
-        localStorage.setItem("sourcewise_custom_pages", JSON.stringify(textOnlyPages));
-        localStorage.setItem("sourcewise_custom_chunks", JSON.stringify(updatedCustomChunks));
-      } catch {
-        // ignore storage quota errors
-      }
-    }
+    // Persist full bundle (including ALL page images 1..N!) in IndexedDB via account-storage
+    loadWorkspaceBundle().then((bundle) => {
+      const mergedPapers = deduplicatePapers([newPaper, ...bundle.papers]);
+      saveWorkspaceBundle({
+        ...bundle,
+        papers: mergedPapers,
+        pages: [...bundle.pages.filter((pg) => pg.document_id !== newPaper.id), ...newPages],
+        chunks: [...bundle.chunks.filter((ck) => ck.document_id !== newPaper.id), ...newChunks],
+      });
+    });
 
-    setPapers((prev) => [newPaper, ...prev]);
+    setPapers((prev) => deduplicatePapers([newPaper, ...prev]));
     setPages(newPages);
     setSelectedPaper(newPaper);
     setCurrentPageNum(1);
@@ -429,7 +387,7 @@ export default function ProjectWorkspacePage({
     });
 
     setUploadSuccessBanner(
-      `✅ Added "${newPaper.title}" (${newPages.length} Pages)! You can now read your real PDF on the left and ask the AI questions about it on the right.`
+      `✅ Added "${newPaper.title}" (${newPages.length} Pages)! All ${newPages.length} pages (PDF View + Cleaned Text) are ready.`
     );
     setTimeout(() => setUploadSuccessBanner(null), 8000);
 
@@ -521,7 +479,19 @@ export default function ProjectWorkspacePage({
           thinking: data.thinking || data.message.thinking,
           modelUsed: data.modelUsed || data.message.modelUsed,
         };
-        setChatMessages((prev) => [...prev, fullMsg]);
+        setChatMessages((prev) => {
+          const nextMsgs = [...prev, fullMsg];
+          loadWorkspaceBundle().then((bundle) => {
+            saveWorkspaceBundle({
+              ...bundle,
+              chatsByProject: {
+                ...bundle.chatsByProject,
+                [projectId]: nextMsgs,
+              },
+            });
+          });
+          return nextMsgs;
+        });
       }
     } catch (err) {
       console.error("Chat query failed:", err);
@@ -1060,12 +1030,21 @@ export default function ProjectWorkspacePage({
       setSelectedPaper(remaining[0] || null);
     }
     const updatedCustom = customPapers.filter((p) => p.id !== paperId);
+    const updatedPages = customPages.filter((pg) => pg.document_id !== paperId);
+    const updatedChunks = customChunks.filter((ck) => ck.document_id !== paperId);
     setCustomPapers(updatedCustom);
-    try {
-      localStorage.setItem("sourcewise_custom_papers", JSON.stringify(updatedCustom));
-    } catch {
-      // ignore
-    }
+    setCustomPages(updatedPages);
+    setCustomChunks(updatedChunks);
+
+    loadWorkspaceBundle().then((bundle) => {
+      saveWorkspaceBundle({
+        ...bundle,
+        papers: bundle.papers.filter((p) => p.id !== paperId),
+        pages: bundle.pages.filter((pg) => pg.document_id !== paperId),
+        chunks: bundle.chunks.filter((ck) => ck.document_id !== paperId),
+      });
+    });
+
     await fetch(`/api/papers?id=${paperId}`, { method: "DELETE" });
   };
 
@@ -1148,6 +1127,12 @@ export default function ProjectWorkspacePage({
       const data = await res.json();
       if (data.note) {
         setNotes((prev) => [data.note, ...prev]);
+        loadWorkspaceBundle().then((bundle) => {
+          saveWorkspaceBundle({
+            ...bundle,
+            notes: [data.note, ...bundle.notes],
+          });
+        });
         setNewNoteTitle("");
         setNewNoteContent("");
         setNewNotePage("");
@@ -1395,46 +1380,43 @@ export default function ProjectWorkspacePage({
                   </select>
                 </div>
 
-                {/* Page Navigation & View Mode Controls */}
+                {/* Page Navigation & Always-Visible View Mode Controls (Page 1 to N) */}
                 <div className="flex flex-wrap items-center gap-2 font-mono-provenance text-xs">
-                  {(activePage?.image_url ||
-                    (selectedPaper && pdfObjectUrls[selectedPaper.id])) && (
-                    <div className="flex items-center rounded border border-[var(--border-paper-strong)] bg-white p-0.5 text-[10px]">
-                      <button
-                        type="button"
-                        onClick={() => setReaderViewMode("both")}
-                        className={`rounded px-2 py-0.5 font-bold transition cursor-pointer ${
-                          readerViewMode === "both"
-                            ? "bg-[var(--accent-sage-dark)] text-white"
-                            : "text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
-                        }`}
-                      >
-                        📄 Page + Text
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setReaderViewMode("visual")}
-                        className={`rounded px-2 py-0.5 font-bold transition cursor-pointer ${
-                          readerViewMode === "visual"
-                            ? "bg-[var(--accent-sage-dark)] text-white"
-                            : "text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
-                        }`}
-                      >
-                        🖼️ PDF View
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setReaderViewMode("text")}
-                        className={`rounded px-2 py-0.5 font-bold transition cursor-pointer ${
-                          readerViewMode === "text"
-                            ? "bg-[var(--accent-sage-dark)] text-white"
-                            : "text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
-                        }`}
-                      >
-                        📝 Text Only
-                      </button>
-                    </div>
-                  )}
+                  <div className="flex items-center rounded border border-[var(--border-paper-strong)] bg-white p-0.5 text-[10px]">
+                    <button
+                      type="button"
+                      onClick={() => setReaderViewMode("both")}
+                      className={`rounded px-2 py-0.5 font-bold transition cursor-pointer ${
+                        readerViewMode === "both"
+                          ? "bg-[var(--accent-sage-dark)] text-white"
+                          : "text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
+                      }`}
+                    >
+                      📄 Page + Text
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setReaderViewMode("visual")}
+                      className={`rounded px-2 py-0.5 font-bold transition cursor-pointer ${
+                        readerViewMode === "visual"
+                          ? "bg-[var(--accent-sage-dark)] text-white"
+                          : "text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
+                      }`}
+                    >
+                      🖼️ PDF View
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setReaderViewMode("text")}
+                      className={`rounded px-2 py-0.5 font-bold transition cursor-pointer ${
+                        readerViewMode === "text"
+                          ? "bg-[var(--accent-sage-dark)] text-white"
+                          : "text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
+                      }`}
+                    >
+                      📝 Text Only
+                    </button>
+                  </div>
 
                   <button
                     onClick={() => setCurrentPageNum((p) => Math.max(1, p - 1))}
@@ -1470,14 +1452,14 @@ export default function ProjectWorkspacePage({
                       {selectedPaper?.journal_or_venue || "Uploaded Paper"} • Page {currentPageNum}
                     </span>
                     <h2 className="text-xl sm:text-2xl font-bold mt-1 text-[var(--ink-primary)]">
-                      {selectedPaper?.title}
+                      {selectedPaper?.title?.replace(/^[|¦\s]+/, "")}
                     </h2>
                     <p className="font-sans-ui text-xs text-[var(--ink-muted)] mt-1.5">
-                      Authors: {selectedPaper?.authors.join(", ")}
+                      Authors: {selectedPaper?.authors.map((a) => a.replace(/^[(\s]+|[)\s]+$/g, "")).join(", ")}
                     </p>
                   </div>
 
-                  {/* Real Visual PDF Page Rendering (Canvas Snapshot or Native PDF Embed) */}
+                  {/* Visual PDF Page Rendering (Canvas Snapshot, Native PDF Embed, or Styled Page Sheet) */}
                   {readerViewMode !== "text" && activePage?.image_url && (
                     <div className="rounded-xl border border-[var(--border-paper-strong)] bg-zinc-50 p-3 shadow-xs">
                       <div className="mb-2 flex items-center justify-between font-mono-provenance text-[10px] text-[var(--ink-muted)]">
@@ -1493,7 +1475,7 @@ export default function ProjectWorkspacePage({
                     </div>
                   )}
 
-                  {readerViewMode === "visual" &&
+                  {readerViewMode !== "text" &&
                     !activePage?.image_url &&
                     selectedPaper &&
                     pdfObjectUrls[selectedPaper.id] && (
@@ -1507,18 +1489,20 @@ export default function ProjectWorkspacePage({
                     )}
 
                   {/* Render Page Content with Structured Formatting & Passage Highlight */}
-                  {(readerViewMode !== "visual" || !activePage?.image_url) && (
+                  {(readerViewMode !== "visual" ||
+                    (!activePage?.image_url &&
+                      !(selectedPaper && pdfObjectUrls[selectedPaper.id]))) && (
                     <div className="rounded-xl border border-[var(--border-paper-strong)] bg-white p-5 shadow-2xs space-y-3">
-                      {activePage?.image_url && (
-                        <div className="flex items-center justify-between border-b border-[var(--border-paper)] pb-2">
-                          <span className="font-mono-provenance text-[10px] font-bold uppercase tracking-wider text-[var(--accent-sage-dark)]">
-                            📄 Extracted &amp; Cleaned Text (Page {currentPageNum})
-                          </span>
-                          <span className="font-mono-provenance text-[10px] text-[var(--ink-muted)]">
-                            Auto-Formatted Outline
-                          </span>
-                        </div>
-                      )}
+                      <div className="flex items-center justify-between border-b border-[var(--border-paper)] pb-2">
+                        <span className="font-mono-provenance text-[10px] font-bold uppercase tracking-wider text-[var(--accent-sage-dark)]">
+                          {readerViewMode === "visual"
+                            ? `📄 PDF Page ${currentPageNum} Sheet View`
+                            : `📄 Extracted & Cleaned Text (Page ${currentPageNum})`}
+                        </span>
+                        <span className="font-mono-provenance text-[10px] text-[var(--ink-muted)]">
+                          Auto-Formatted Outline
+                        </span>
+                      </div>
                       {renderFormattedReaderPageText(
                         activePage?.text_content || "",
                         highlightedText
