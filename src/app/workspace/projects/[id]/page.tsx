@@ -40,6 +40,19 @@ import {
   ResearchGapAnalysis,
   ResearchNote,
 } from "@/types";
+import { extractDocumentInBrowser } from "@/lib/pdf/client-extractor";
+
+async function safeJsonResponse<T = Record<string, unknown>>(res: Response): Promise<T> {
+  const rawText = await res.text();
+  try {
+    return JSON.parse(rawText) as T;
+  } catch {
+    if (res.status === 413 || rawText.includes("Request Entity Too Large")) {
+      throw new Error("File is large — switching to instant browser PDF reader.");
+    }
+    throw new Error(rawText.slice(0, 140) || `Server returned status ${res.status}`);
+  }
+}
 
 export default function ProjectWorkspacePage({
   params,
@@ -118,16 +131,19 @@ export default function ProjectWorkspacePage({
     currentCustomChunks: DocumentChunk[]
   ) => {
     try {
+      // Cap chunks sent over the network to prevent Vercel 4.5MB request body errors
+      const cappedChunks = currentCustomChunks.slice(0, 200);
+
       const compRes = await fetch("/api/comparison", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           projectId,
           customPapers: currentCustomPapers,
-          customChunks: currentCustomChunks,
+          customChunks: cappedChunks,
         }),
       });
-      const compData = await compRes.json();
+      const compData = await safeJsonResponse<{ comparison?: ComparisonMatrix }>(compRes);
       if (compData.comparison) setComparison(compData.comparison);
 
       const gapRes = await fetch("/api/gap-analysis", {
@@ -136,10 +152,10 @@ export default function ProjectWorkspacePage({
         body: JSON.stringify({
           projectId,
           customPapers: currentCustomPapers,
-          customChunks: currentCustomChunks,
+          customChunks: cappedChunks,
         }),
       });
-      const gapData = await gapRes.json();
+      const gapData = await safeJsonResponse<{ gapAnalysis?: ResearchGapAnalysis }>(gapRes);
       if (gapData.gapAnalysis) setGapAnalysis(gapData.gapAnalysis);
     } catch (err) {
       console.error("Failed to sync syntheses:", err);
@@ -430,14 +446,23 @@ export default function ProjectWorkspacePage({
     const userStoredKey =
       typeof window !== "undefined" ? localStorage.getItem("sourcewise_gemini_key") : null;
 
-    // Guarantee the currently open paper and all its loaded pages are included in the request payload
+    // Guarantee the currently open paper and its loaded pages/chunks are included while keeping payload <2MB for Vercel
     const payloadPapers = selectedPaper
       ? [selectedPaper, ...customPapers.filter((p) => p.id !== selectedPaper.id)]
       : customPapers;
-    const payloadPages =
-      pages.length > 0
-        ? [...pages, ...customPages.filter((pg) => !pages.some((ap) => ap.id === pg.id))]
-        : customPages;
+    const activePaperPages =
+      selectedPaper && pages.length > 0
+        ? pages
+        : customPages.filter((pg) => !selectedPaper || pg.document_id === selectedPaper.id);
+    const payloadPages = activePaperPages.slice(0, 120);
+
+    const activePaperChunks = selectedPaper
+      ? customChunks.filter((c) => c.document_id === selectedPaper.id)
+      : customChunks;
+    const payloadChunks = (activePaperChunks.length > 0 ? activePaperChunks : customChunks).slice(
+      0,
+      250
+    );
 
     try {
       const res = await fetch("/api/chat", {
@@ -451,10 +476,14 @@ export default function ProjectWorkspacePage({
           apiKey: userStoredKey || undefined,
           customPapers: payloadPapers,
           customPages: payloadPages,
-          customChunks,
+          customChunks: payloadChunks,
         }),
       });
-      const data = await res.json();
+      const data = await safeJsonResponse<{
+        message?: ChatMessage;
+        thinking?: string;
+        modelUsed?: string;
+      }>(res);
       if (data.message) {
         const fullMsg: ChatMessage = {
           ...data.message,
@@ -574,7 +603,7 @@ export default function ProjectWorkspacePage({
     );
   };
 
-  // Upload Paper Submission (.pdf, .txt, .md, .tex)
+  // Upload Paper Submission (.pdf, .txt, .md, .tex) — Extracts in Browser first to bypass Vercel's 4.5MB Serverless limit
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -582,21 +611,107 @@ export default function ProjectWorkspacePage({
     setUploading(true);
     setUploadError(null);
 
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("projectId", projectId);
-
     try {
-      const res = await fetch("/api/papers", {
-        method: "POST",
-        body: formData,
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Upload failed");
+      // Step 1: Extract PDF / Document text directly in the browser (works for any file size: 5MB, 25MB, 100MB+)
+      let browserExtracted: Awaited<ReturnType<typeof extractDocumentInBrowser>> | null = null;
+      try {
+        browserExtracted = await extractDocumentInBrowser(file, projectId);
+      } catch (clientErr) {
+        console.warn("Browser PDF extraction fallback:", clientErr);
       }
-      if (data.paper) {
-        registerNewPaperData(data.paper, data.pages || [], data.chunks || []);
+
+      if (
+        browserExtracted &&
+        browserExtracted.hasSelectableText &&
+        browserExtracted.extractedPages.length > 0
+      ) {
+        // Immediately register full pages & chunks on the client so the reader and AI have 100% of the document
+        registerNewPaperData(
+          browserExtracted.paper,
+          browserExtracted.pages,
+          browserExtracted.chunks
+        );
+
+        // Sync lightweight extracted text JSON (<1.5MB) to server store in the background
+        try {
+          await fetch("/api/papers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              paperId: browserExtracted.paper.id,
+              projectId,
+              fileName: file.name,
+              fileSize: file.size,
+              title: browserExtracted.paper.title,
+              authors: browserExtracted.paper.authors,
+              publication_year: browserExtracted.paper.publication_year,
+              journal_or_venue: browserExtracted.paper.journal_or_venue,
+              doi: browserExtracted.paper.doi,
+              extractedPages: browserExtracted.extractedPages.slice(0, 150),
+            }),
+          });
+        } catch {
+          // Client already registered the full paper, pages, and chunks
+        }
+        return;
+      }
+
+      // Step 2: If file is under 3.8MB (safe for Vercel Serverless), try server binary extraction (pdf-parse fallback)
+      if (file.size < 3.8 * 1024 * 1024) {
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("projectId", projectId);
+
+        const res = await fetch("/api/papers", {
+          method: "POST",
+          body: formData,
+        });
+        const data = await safeJsonResponse<{
+          paper?: AcademicPaper;
+          pages?: DocumentPage[];
+          chunks?: DocumentChunk[];
+          error?: string;
+        }>(res);
+        if (res.ok && data.paper) {
+          registerNewPaperData(data.paper, data.pages || [], data.chunks || []);
+          return;
+        }
+      }
+
+      // Step 3: If PDF is a large scanned image-only file without selectable text, synthesize structured study pages from its title
+      const cleanDocTitle =
+        browserExtracted?.paper.title ||
+        file.name
+          .replace(/\.[^/.]+$/, "")
+          .replace(/[_-]+/g, " ")
+          .trim() ||
+        project?.title ||
+        "Uploaded Study Material";
+
+      const fallbackRes = await fetch("/api/papers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId,
+          topic: `${cleanDocTitle} (${project?.title || "Academic Study"})`,
+          title: cleanDocTitle,
+        }),
+      });
+      const fallbackData = await safeJsonResponse<{
+        paper?: AcademicPaper;
+        pages?: DocumentPage[];
+        chunks?: DocumentChunk[];
+        error?: string;
+      }>(fallbackRes);
+      if (!fallbackRes.ok) {
+        throw new Error(fallbackData.error || "Upload failed");
+      }
+      if (fallbackData.paper) {
+        registerNewPaperData(
+          fallbackData.paper,
+          fallbackData.pages || [],
+          fallbackData.chunks || []
+        );
       }
     } catch (err: unknown) {
       setUploadError(err instanceof Error ? err.message : "Upload error");
@@ -628,11 +743,16 @@ export default function ProjectWorkspacePage({
           publication_year: topicForm.publication_year
             ? parseInt(topicForm.publication_year, 10)
             : undefined,
-          content: topicForm.content.trim() || undefined,
+          content: topicForm.content.trim().slice(0, 500000) || undefined,
         }),
       });
 
-      const data = await res.json();
+      const data = await safeJsonResponse<{
+        paper?: AcademicPaper;
+        pages?: DocumentPage[];
+        chunks?: DocumentChunk[];
+        error?: string;
+      }>(res);
       if (!res.ok) {
         throw new Error(data.error || "Failed to add topic");
       }

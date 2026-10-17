@@ -23,10 +23,14 @@ export async function POST(req: NextRequest) {
   try {
     const contentType = req.headers.get("content-type") || "";
 
-    // 1. Handling JSON Request (Topic Ingestion / Text Paste)
+    // 1. Handling JSON Request (Client-Extracted PDF Pages OR Topic Ingestion / Text Paste)
     if (contentType.includes("application/json")) {
       const body = await req.json();
       const {
+        paperId: clientPaperId,
+        extractedPages,
+        fileName,
+        fileSize,
         topic,
         title,
         authors,
@@ -38,7 +42,65 @@ export async function POST(req: NextRequest) {
       } = body;
 
       const pid = projectId || "proj_pedagogy_ai";
-      const paperId = `paper_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const paperId =
+        clientPaperId || `paper_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
+      // 1A. Pre-extracted PDF / Document pages sent from Browser (bypasses Vercel 4.5MB binary limit)
+      if (Array.isArray(extractedPages) && extractedPages.length > 0) {
+        const pages: DocumentPage[] = extractedPages.map(
+          (p: { page_number?: number; text?: string }, idx: number) => ({
+            id: `page_${paperId}_${p.page_number || idx + 1}`,
+            document_id: paperId,
+            page_number: p.page_number || idx + 1,
+            char_count: (p.text || "").length,
+            text_content: p.text || "",
+            created_at: new Date().toISOString(),
+          })
+        );
+
+        const chunks = chunkDocumentPages(
+          paperId,
+          pages.map((p) => ({ page_number: p.page_number, text: p.text_content }))
+        );
+
+        const newPaper: AcademicPaper = {
+          id: paperId,
+          project_id: pid,
+          user_id: "usr_researcher_01",
+          title: title?.trim() || (fileName ? fileName.replace(/\.[^/.]+$/, "") : "Uploaded Document"),
+          authors:
+            Array.isArray(authors) && authors.length > 0
+              ? authors
+              : ["Uploaded Document Author"],
+          publication_year: publication_year || new Date().getFullYear(),
+          journal_or_venue: journal_or_venue || null,
+          doi: doi || null,
+          file_path: `/uploads/${fileName || `${paperId}.pdf`}`,
+          file_size_bytes: typeof fileSize === "number" ? fileSize : 0,
+          file_hash: `sha256_${Date.now()}`,
+          page_count: pages.length,
+          processing_status: "ready",
+          error_message: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+
+        store.savePaper(newPaper);
+        store.savePages(pages);
+        store.saveChunks(chunks);
+
+        return NextResponse.json(
+          {
+            paper: newPaper,
+            pages,
+            chunks,
+            pagesCount: pages.length,
+            chunksCount: chunks.length,
+          },
+          { status: 201 }
+        );
+      }
+
       const paperTitle = title?.trim() || topic?.trim() || "Untitled Academic Paper";
 
       // If user provided a topic but no long content, generate a comprehensive structured academic paper manuscript
