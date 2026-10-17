@@ -21,11 +21,17 @@ import {
   ZoomIn,
   ZoomOut,
   Maximize2,
+  Plus,
+  X,
+  FilePlus,
+  HelpCircle,
+  Trash2,
 } from "lucide-react";
 import {
   ResearchProject,
   AcademicPaper,
   DocumentPage,
+  DocumentChunk,
   ChatMessage,
   Citation,
   ComparisonMatrix,
@@ -48,6 +54,10 @@ export default function ProjectWorkspacePage({
     "reader" | "library" | "comparison" | "canvas" | "gaps" | "notes"
   >("reader");
 
+  // Helpful Onboarding Guide Toggle
+  const [showGuide, setShowGuide] = useState<boolean>(true);
+  const [uploadSuccessBanner, setUploadSuccessBanner] = useState<string | null>(null);
+
   // Project & Data State
   const [project, setProject] = useState<ResearchProject | null>(null);
   const [papers, setPapers] = useState<AcademicPaper[]>([]);
@@ -55,6 +65,11 @@ export default function ProjectWorkspacePage({
   const [pages, setPages] = useState<DocumentPage[]>([]);
   const [currentPageNum, setCurrentPageNum] = useState<number>(1);
   const [highlightedText, setHighlightedText] = useState<string | null>(null);
+
+  // Client-side persistence for stateless Vercel Serverless compatibility
+  const [customPapers, setCustomPapers] = useState<AcademicPaper[]>([]);
+  const [customPages, setCustomPages] = useState<DocumentPage[]>([]);
+  const [customChunks, setCustomChunks] = useState<DocumentChunk[]>([]);
 
   // Chat State
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -68,6 +83,9 @@ export default function ProjectWorkspacePage({
   const [canvasData, setCanvasData] = useState<ResearchCanvasData | null>(null);
   const [selectedNode, setSelectedNode] = useState<CanvasNode | null>(null);
   const [zoomLevel, setZoomLevel] = useState<number>(1);
+  const [newNodeLabel, setNewNodeLabel] = useState("");
+  const [newNodeDesc, setNewNodeDesc] = useState("");
+  const [showAddNodeModal, setShowAddNodeModal] = useState(false);
 
   // Research Gaps State
   const [gapAnalysis, setGapAnalysis] = useState<ResearchGapAnalysis | null>(null);
@@ -82,45 +100,127 @@ export default function ProjectWorkspacePage({
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
-  // Load project & papers
+  // Ingest Custom Topic / Manuscript Modal State
+  const [showTopicModal, setShowTopicModal] = useState(false);
+  const [topicSubmitting, setTopicSubmitting] = useState(false);
+  const [topicError, setTopicError] = useState<string | null>(null);
+  const [topicForm, setTopicForm] = useState({
+    topic: "",
+    title: "",
+    authors: "",
+    publication_year: new Date().getFullYear().toString(),
+    content: "",
+  });
+
+  // Helper to refresh Comparison, Gaps, and Canvas with all custom uploaded papers
+  const syncProjectSyntheses = async (
+    currentCustomPapers: AcademicPaper[],
+    currentCustomChunks: DocumentChunk[]
+  ) => {
+    try {
+      const compRes = await fetch("/api/comparison", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId,
+          customPapers: currentCustomPapers,
+          customChunks: currentCustomChunks,
+        }),
+      });
+      const compData = await compRes.json();
+      if (compData.comparison) setComparison(compData.comparison);
+
+      const gapRes = await fetch("/api/gap-analysis", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId,
+          customPapers: currentCustomPapers,
+          customChunks: currentCustomChunks,
+        }),
+      });
+      const gapData = await gapRes.json();
+      if (gapData.gapAnalysis) setGapAnalysis(gapData.gapAnalysis);
+    } catch (err) {
+      console.error("Failed to sync syntheses:", err);
+    }
+  };
+
+  // Load project, papers, and localStorage state on mount
   useEffect(() => {
+    let localPapers: AcademicPaper[] = [];
+    let localPages: DocumentPage[] = [];
+    let localChunks: DocumentChunk[] = [];
+    let localProjects: ResearchProject[] = [];
+
+    try {
+      localPapers = JSON.parse(localStorage.getItem("sourcewise_custom_papers") || "[]");
+      localPages = JSON.parse(localStorage.getItem("sourcewise_custom_pages") || "[]");
+      localChunks = JSON.parse(localStorage.getItem("sourcewise_custom_chunks") || "[]");
+      localProjects = JSON.parse(localStorage.getItem("sourcewise_custom_projects") || "[]");
+    } catch {
+      // ignore storage parse errors
+    }
+
+    const projectLocalPapers = localPapers.filter((p) => p.project_id === projectId);
+    setCustomPapers(projectLocalPapers);
+    setCustomPages(localPages);
+    setCustomChunks(localChunks);
+
     fetch("/api/projects")
       .then((res) => res.json())
       .then((data) => {
-        if (data.projects) {
-          const found = data.projects.find((p: ResearchProject) => p.id === projectId);
-          if (found) setProject(found);
-        }
+        const allProjs = [...localProjects, ...(data.projects || [])];
+        const found = allProjs.find((p: ResearchProject) => p.id === projectId);
+        if (found) setProject(found);
       });
 
     fetch(`/api/papers?projectId=${projectId}`)
       .then((res) => res.json())
       .then((data) => {
-        if (data.papers && data.papers.length > 0) {
-          setPapers(data.papers);
-          setSelectedPaper(data.papers[0]);
+        const serverPapers: AcademicPaper[] = data.papers || [];
+        const mergedMap = new Map<string, AcademicPaper>();
+        for (const p of [...projectLocalPapers, ...serverPapers]) {
+          if (!mergedMap.has(p.id)) mergedMap.set(p.id, p);
+        }
+        const mergedList = Array.from(mergedMap.values());
+        setPapers(mergedList);
+        if (mergedList.length > 0) {
+          setSelectedPaper(mergedList[0]);
         }
       });
 
-    // Load initial comparison
-    fetch(`/api/comparison?projectId=${projectId}`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.comparison) setComparison(data.comparison);
-      });
+    // Load initial comparison & gaps (including any custom uploaded papers)
+    syncProjectSyntheses(projectLocalPapers, localChunks);
 
     // Load canvas
     fetch(`/api/canvas?projectId=${projectId}`)
       .then((res) => res.json())
       .then((data) => {
-        if (data.canvas) setCanvasData(data.canvas);
-      });
-
-    // Load gaps
-    fetch(`/api/gap-analysis?projectId=${projectId}`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.gapAnalysis) setGapAnalysis(data.gapAnalysis);
+        if (data.canvas) {
+          const baseCanvas: ResearchCanvasData = data.canvas;
+          // Ensure any custom uploaded papers also appear as nodes on the visual map
+          const existingNodeIds = new Set(baseCanvas.nodes.map((n) => n.id));
+          const extraNodes: CanvasNode[] = [];
+          projectLocalPapers.forEach((p, idx) => {
+            const nodeId = `node_${p.id}`;
+            if (!existingNodeIds.has(nodeId)) {
+              extraNodes.push({
+                id: nodeId,
+                type: "paper",
+                label: p.title,
+                description: `Uploaded Paper • ${p.authors[0] || "Author"} (${p.publication_year || 2025})`,
+                x: 160 + ((idx + 3) % 3) * 310,
+                y: 260 + Math.floor((idx + 3) / 3) * 160,
+                document_id: p.id,
+              });
+            }
+          });
+          setCanvasData({
+            ...baseCanvas,
+            nodes: [...baseCanvas.nodes, ...extraNodes],
+          });
+        }
       });
 
     // Load notes
@@ -129,103 +229,159 @@ export default function ProjectWorkspacePage({
       .then((data) => {
         if (data.notes) setNotes(data.notes);
       });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
-  // Load pages when selected paper changes
+  // Load physical extracted pages when selected paper changes
   useEffect(() => {
-    if (selectedPaper) {
-      // In local demo / seeded store, fetch pages
-      fetch(`/api/papers`)
-        .then(() => {
-          // Provide default pages for vaswani/lewis/gao
-          if (selectedPaper.id === "paper_vaswani_2017") {
-            setPages([
-              {
-                id: "p1",
-                document_id: "paper_vaswani_2017",
-                page_number: 1,
-                char_count: 2450,
-                text_content:
-                  "The dominant sequence transduction models are based on complex recurrent or convolutional neural networks that include an encoder and a decoder. The best performing models also connect the encoder and decoder through an attention mechanism. We propose a new simple network architecture, the Transformer, based solely on attention mechanisms, dispensing with recurrence and convolutions entirely. Experiments on two machine translation tasks show these models to be superior in quality while being more parallelizable and requiring significantly less time to train.",
-                created_at: new Date().toISOString(),
-              },
-              {
-                id: "p2",
-                document_id: "paper_vaswani_2017",
-                page_number: 2,
-                char_count: 2900,
-                text_content:
-                  "Recurrent models typically factor computation along the symbol positions of the input and output sequences. Aligning the positions to steps in computation time, they generate a sequence of hidden states ht, as a function of the previous hidden state ht-1 and the input for position t. This inherently sequential nature precludes parallelization within training examples, which becomes critical at longer sequence lengths, as memory constraints limit batching across examples.",
-                created_at: new Date().toISOString(),
-              },
-              {
-                id: "p3",
-                document_id: "paper_vaswani_2017",
-                page_number: 3,
-                char_count: 3100,
-                text_content:
-                  "An attention function can be described as mapping a query and a set of key-value pairs to an output, where the query, keys, values, and output are all vectors. The output is computed as a weighted sum of the values, where the weight assigned to each value is computed by a compatibility function of the query with the corresponding key. We compute the dot products of the query with all keys, divide each by sqrt(dk), and apply a softmax function to obtain the weights on the values.",
-                created_at: new Date().toISOString(),
-              },
-            ]);
-          } else if (selectedPaper.id === "paper_lewis_2020") {
-            setPages([
-              {
-                id: "pl1",
-                document_id: "paper_lewis_2020",
-                page_number: 1,
-                char_count: 2600,
-                text_content:
-                  "Large pre-trained language models have been shown to store factual knowledge in their parameters, and achieve state-of-the-art results when fine-tuned on downstream NLP tasks. However, their ability to access and precisely manipulate knowledge is still limited, and they fall short on knowledge-intensive tasks. In this work, we explore a general-purpose fine-tuning recipe for retrieval-augmented generation (RAG) — models which combine pre-trained parametric and non-parametric memory for language generation.",
-                created_at: new Date().toISOString(),
-              },
-              {
-                id: "pl4",
-                document_id: "paper_lewis_2020",
-                page_number: 4,
-                char_count: 3200,
-                text_content:
-                  "RAG models combine a pre-trained sequence-to-sequence model (parametric memory) with a dense vector index of Wikipedia (non-parametric memory), accessed with a neural retriever. We formulate two models: RAG-Sequence, which uses the same retrieved document to generate the complete sequence, and RAG-Token, which can use different retrieved documents to generate each token. We show that RAG models generate more specific, factual, and diverse language than parametric-only seq2seq baselines.",
-                created_at: new Date().toISOString(),
-              },
-            ]);
-          } else {
-            // General pages for newly uploaded papers
-            setPages([
-              {
-                id: `p_${selectedPaper.id}_1`,
-                document_id: selectedPaper.id,
-                page_number: 1,
-                char_count: 1200,
-                text_content: `Title: ${selectedPaper.title}\nAuthors: ${selectedPaper.authors.join(", ")}\nPublished: ${selectedPaper.publication_year || 2024}\n\nThis paper discusses empirical findings and methodologies relevant to ${project?.research_question || "academic research"}. Physical page provenance is indexed for verifiable citation resolution.`,
-                created_at: new Date().toISOString(),
-              },
-            ]);
-          }
-          setCurrentPageNum(1);
-          setHighlightedText(null);
-        });
+    if (!selectedPaper) return;
+
+    // 1. Check if pages are already in client memory (customPages) for instant 0ms load on Vercel
+    const cachedPages = customPages
+      .filter((p) => p.document_id === selectedPaper.id)
+      .sort((a, b) => a.page_number - b.page_number);
+
+    if (cachedPages.length > 0) {
+      setPages(cachedPages);
+      setCurrentPageNum(1);
+      setHighlightedText(null);
+      return;
     }
-  }, [selectedPaper, project]);
+
+    // 2. Otherwise fetch from API
+    fetch(`/api/papers/${selectedPaper.id}/pages`)
+      .then((res) => {
+        if (!res.ok) throw new Error("Failed to load extracted pages");
+        return res.json();
+      })
+      .then((data) => {
+        if (data.pages && data.pages.length > 0) {
+          setPages(data.pages);
+        } else {
+          setPages([
+            {
+              id: `p_${selectedPaper.id}_1`,
+              document_id: selectedPaper.id,
+              page_number: 1,
+              char_count: 500,
+              text_content: `Title: ${selectedPaper.title}\nAuthors: ${selectedPaper.authors.join(", ")}\nPublished: ${selectedPaper.publication_year || 2024}\n\nThis paper is ready in your Study Room.`,
+              created_at: new Date().toISOString(),
+            },
+          ]);
+        }
+        setCurrentPageNum(1);
+        setHighlightedText(null);
+      })
+      .catch(() => {
+        setPages([
+          {
+            id: `p_${selectedPaper.id}_1`,
+            document_id: selectedPaper.id,
+            page_number: 1,
+            char_count: 500,
+            text_content: `Title: ${selectedPaper.title}\nAuthors: ${selectedPaper.authors.join(", ")}\nPublished: ${selectedPaper.publication_year || 2024}`,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+        setCurrentPageNum(1);
+      });
+  }, [selectedPaper, customPages]);
+
+  // Helper to persist newly added paper + pages + chunks in state & localStorage
+  const registerNewPaperData = (
+    newPaper: AcademicPaper,
+    newPages: DocumentPage[],
+    newChunks: DocumentChunk[]
+  ) => {
+    const updatedCustomPapers = [newPaper, ...customPapers];
+    const updatedCustomPages = [...customPages, ...newPages];
+    const updatedCustomChunks = [...customChunks, ...newChunks];
+
+    setCustomPapers(updatedCustomPapers);
+    setCustomPages(updatedCustomPages);
+    setCustomChunks(updatedCustomChunks);
+
+    try {
+      const allStoredPapers: AcademicPaper[] = JSON.parse(
+        localStorage.getItem("sourcewise_custom_papers") || "[]"
+      );
+      localStorage.setItem(
+        "sourcewise_custom_papers",
+        JSON.stringify([newPaper, ...allStoredPapers])
+      );
+      localStorage.setItem("sourcewise_custom_pages", JSON.stringify(updatedCustomPages));
+      localStorage.setItem("sourcewise_custom_chunks", JSON.stringify(updatedCustomChunks));
+    } catch {
+      // ignore storage quota errors
+    }
+
+    setPapers((prev) => [newPaper, ...prev]);
+    setPages(newPages);
+    setSelectedPaper(newPaper);
+    setCurrentPageNum(1);
+    setHighlightedText(null);
+    setActiveTab("reader");
+
+    // Add node to Visual Map
+    setCanvasData((prev) => {
+      if (!prev) return prev;
+      const newNode: CanvasNode = {
+        id: `node_${newPaper.id}`,
+        type: "paper",
+        label: newPaper.title,
+        description: `Added Paper • ${newPaper.authors[0] || "Author"} (${newPaper.publication_year || 2025})`,
+        x: 200 + (prev.nodes.length % 3) * 280,
+        y: 260 + Math.floor(prev.nodes.length / 4) * 140,
+        document_id: newPaper.id,
+      };
+      return {
+        ...prev,
+        nodes: [...prev.nodes, newNode],
+        edges: [
+          ...prev.edges,
+          {
+            id: `edge_${newPaper.id}`,
+            source: "node_rq",
+            target: newNode.id,
+            type: "related_concept",
+            label: "Added Source",
+          },
+        ],
+      };
+    });
+
+    setUploadSuccessBanner(
+      `✅ Added "${newPaper.title}" (${newPages.length} Pages)! You can now read it on the left and ask the AI questions about it on the right.`
+    );
+    setTimeout(() => setUploadSuccessBanner(null), 8000);
+
+    // Refresh Compare Table & New Ideas (Gaps)
+    syncProjectSyntheses(updatedCustomPapers, updatedCustomChunks);
+  };
 
   // Jump to citation page & highlight passage
   const handleCitationClick = (citation: Citation) => {
-    // Check if target paper is currently opened
     const targetPaper = papers.find((p) => p.id === citation.document_id);
     if (targetPaper && targetPaper.id !== selectedPaper?.id) {
       setSelectedPaper(targetPaper);
+      // Wait a tick for paper pages to switch, then jump to page & highlight
+      setTimeout(() => {
+        setCurrentPageNum(citation.page_number);
+        setHighlightedText(citation.passage_quote);
+      }, 80);
+    } else {
+      setCurrentPageNum(citation.page_number);
+      setHighlightedText(citation.passage_quote);
     }
-    setCurrentPageNum(citation.page_number);
-    setHighlightedText(citation.passage_quote);
     setActiveTab("reader");
   };
 
-  // Chat Submission
-  const handleSendMessage = async (e: React.FormEvent) => {
+  // Chat Submission with Gemini & Thinking Trace
+  const handleSendMessage = async (e: React.FormEvent, overrideQuestion?: string) => {
     e.preventDefault();
-    if (!inputQuestion.trim() || chatLoading) return;
+    const q = (overrideQuestion ?? inputQuestion).trim();
+    if (!q || chatLoading) return;
 
-    const q = inputQuestion.trim();
     setInputQuestion("");
     setChatLoading(true);
 
@@ -238,6 +394,9 @@ export default function ProjectWorkspacePage({
     };
     setChatMessages((prev) => [...prev, tempMsg]);
 
+    const userStoredKey =
+      typeof window !== "undefined" ? localStorage.getItem("sourcewise_gemini_key") : null;
+
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
@@ -246,11 +405,21 @@ export default function ProjectWorkspacePage({
           question: q,
           projectId,
           conversationId: `conv_${projectId}`,
+          selectedPaperId: selectedPaper?.id,
+          apiKey: userStoredKey || undefined,
+          customPapers,
+          customPages,
+          customChunks,
         }),
       });
       const data = await res.json();
       if (data.message) {
-        setChatMessages((prev) => [...prev, data.message]);
+        const fullMsg: ChatMessage = {
+          ...data.message,
+          thinking: data.thinking || data.message.thinking,
+          modelUsed: data.modelUsed || data.message.modelUsed,
+        };
+        setChatMessages((prev) => [...prev, fullMsg]);
       }
     } catch (err) {
       console.error("Chat query failed:", err);
@@ -259,7 +428,7 @@ export default function ProjectWorkspacePage({
     }
   };
 
-  // Upload Paper Submission
+  // Upload Paper Submission (.pdf, .txt, .md, .tex)
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -281,14 +450,137 @@ export default function ProjectWorkspacePage({
         throw new Error(data.error || "Upload failed");
       }
       if (data.paper) {
-        setPapers((prev) => [data.paper, ...prev]);
-        setSelectedPaper(data.paper);
+        registerNewPaperData(data.paper, data.pages || [], data.chunks || []);
       }
     } catch (err: unknown) {
       setUploadError(err instanceof Error ? err.message : "Upload error");
     } finally {
       setUploading(false);
+      e.target.value = "";
     }
+  };
+
+  // Ingest Custom Topic or Manuscript Submission
+  const handleIngestTopic = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!topicForm.topic.trim() || !topicForm.title.trim()) return;
+
+    setTopicSubmitting(true);
+    setTopicError(null);
+
+    try {
+      const res = await fetch("/api/papers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId,
+          topic: topicForm.topic.trim(),
+          title: topicForm.title.trim(),
+          authors: topicForm.authors
+            ? topicForm.authors.split(",").map((a) => a.trim())
+            : undefined,
+          publication_year: topicForm.publication_year
+            ? parseInt(topicForm.publication_year, 10)
+            : undefined,
+          content: topicForm.content.trim() || undefined,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to add topic");
+      }
+
+      if (data.paper) {
+        setShowTopicModal(false);
+        setTopicForm({
+          topic: "",
+          title: "",
+          authors: "",
+          publication_year: new Date().getFullYear().toString(),
+          content: "",
+        });
+        registerNewPaperData(data.paper, data.pages || [], data.chunks || []);
+      }
+    } catch (err: unknown) {
+      setTopicError(err instanceof Error ? err.message : "Failed to add topic");
+    } finally {
+      setTopicSubmitting(false);
+    }
+  };
+
+  // Delete Paper Handler
+  const handleDeletePaper = async (paperId: string) => {
+    const remaining = papers.filter((p) => p.id !== paperId);
+    setPapers(remaining);
+    if (selectedPaper?.id === paperId) {
+      setSelectedPaper(remaining[0] || null);
+    }
+    const updatedCustom = customPapers.filter((p) => p.id !== paperId);
+    setCustomPapers(updatedCustom);
+    try {
+      localStorage.setItem("sourcewise_custom_papers", JSON.stringify(updatedCustom));
+    } catch {
+      // ignore
+    }
+    await fetch(`/api/papers?id=${paperId}`, { method: "DELETE" });
+  };
+
+  // Add Custom Node to Visual Map
+  const handleAddCanvasNode = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newNodeLabel.trim() || !canvasData) return;
+
+    const newNode: CanvasNode = {
+      id: `node_custom_${Date.now()}`,
+      type: "concept",
+      label: newNodeLabel.trim(),
+      description: newNodeDesc.trim() || "Custom idea box added by student.",
+      x: 260 + ((canvasData.nodes.length * 70) % 400),
+      y: 320 + ((canvasData.nodes.length * 50) % 250),
+    };
+
+    setCanvasData({
+      ...canvasData,
+      nodes: [...canvasData.nodes, newNode],
+      edges: [
+        ...canvasData.edges,
+        {
+          id: `edge_custom_${Date.now()}`,
+          source: "node_rq",
+          target: newNode.id,
+          type: "related_concept",
+          label: "My Idea",
+        },
+      ],
+    });
+    setSelectedNode(newNode);
+    setNewNodeLabel("");
+    setNewNodeDesc("");
+    setShowAddNodeModal(false);
+  };
+
+  // Real Download for Comparison Table
+  const handleDownloadComparison = () => {
+    if (!comparison) return;
+    const lines = [
+      `# ${comparison.title}`,
+      `Generated by SOURCEWISE on ${new Date().toLocaleDateString()}`,
+      "",
+      "| Paper | Main Goal | How They Did It (Method) | Data Used | Main Results | Weaknesses / Limits |",
+      "| --- | --- | --- | --- | --- | --- |",
+      ...comparison.matrix_data.rows.map(
+        (r) =>
+          `| **${r.paper_title}** (${r.year || 2024}) | ${r.values.objective?.text || "-"} | ${r.values.methodology?.text || "-"} | ${r.values.dataset?.text || "-"} | ${r.values.key_findings?.text || "-"} | ${r.values.limitations?.text || "-"} |`
+      ),
+    ];
+    const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `sourcewise-comparison-${projectId}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   // Add Note Submission
@@ -307,7 +599,7 @@ export default function ProjectWorkspacePage({
           title: newNoteTitle,
           content: newNoteContent,
           page_reference: newNotePage ? parseInt(newNotePage, 10) : null,
-          tags: ["literature-synthesis"],
+          tags: ["study-note"],
         }),
       });
       const data = await res.json();
@@ -328,105 +620,201 @@ export default function ProjectWorkspacePage({
     <div className="flex flex-col min-h-screen bg-[var(--surface-paper)] text-[var(--ink-primary)]">
       <Navbar />
 
-      {/* Project Context Header */}
-      <div className="border-b border-[var(--border-paper)] bg-white px-4 sm:px-6 lg:px-8 py-4">
-        <div className="mx-auto max-w-7xl flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="flex items-start gap-3">
-            <Link
-              href="/workspace"
-              className="mt-1 rounded p-1 text-[var(--ink-muted)] hover:bg-[var(--surface-subtle)] hover:text-[var(--ink-primary)]"
-              title="Return to Research Desk"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-mono-provenance text-[10px] uppercase font-bold text-[var(--accent-sage-dark)]">
-                  Research Thesis Project
-                </span>
-                <span className="text-[var(--border-paper-strong)]">•</span>
-                <span className="font-mono-provenance text-[11px] text-[var(--ink-muted)]">
-                  {papers.length} Papers Connected
-                </span>
+      {/* Top Project Bar + Quick Upload Buttons */}
+      <div className="border-b border-[var(--border-paper)] bg-white px-4 sm:px-6 lg:px-8 py-3.5">
+        <div className="mx-auto max-w-7xl flex flex-col gap-3">
+          {/* Row 1: Project Title + Global Add Paper / Topic Buttons */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div className="flex items-start gap-2.5">
+              <Link
+                href="/workspace"
+                className="mt-1 rounded p-1.5 text-[var(--ink-muted)] hover:bg-[var(--surface-subtle)] hover:text-[var(--ink-primary)]"
+                title="Back to All Projects"
+              >
+                <ArrowLeft className="h-4 w-4" />
+              </Link>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono-provenance text-[10px] uppercase font-bold text-[var(--accent-sage-dark)]">
+                    Study Room
+                  </span>
+                  <span className="text-[var(--border-paper-strong)]">•</span>
+                  <span className="font-mono-provenance text-[11px] font-semibold text-[var(--ink-secondary)]">
+                    {papers.length} Paper{papers.length === 1 ? "" : "s"} Loaded
+                  </span>
+                </div>
+                <h1 className="font-editorial text-lg sm:text-xl font-bold text-[var(--ink-primary)]">
+                  {project?.title || "How AI & Transformers Work (Study Room)"}
+                </h1>
               </div>
-              <h1 className="font-editorial text-xl sm:text-2xl font-bold text-[var(--ink-primary)]">
-                {project?.title || "Epistemic Agency in AI-Augmented Literature Reviews"}
-              </h1>
-              {project?.research_question && (
-                <p className="text-xs text-[var(--ink-secondary)] mt-0.5">
-                  <strong className="text-[var(--ink-primary)]">RQ:</strong> {project.research_question}
-                </p>
-              )}
+            </div>
+
+            {/* Always-Visible Action Buttons: Add Topic, Upload PDF, Show Help */}
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowTopicModal(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border-2 border-[var(--accent-sage-dark)] bg-white px-3 py-1.5 text-xs font-bold text-[var(--accent-sage-dark)] shadow-2xs transition hover:bg-[var(--accent-sage-light)] cursor-pointer"
+              >
+                <FilePlus className="h-3.5 w-3.5" />
+                <span>+ Add Topic or Paste Text</span>
+              </button>
+
+              <label className="inline-flex items-center gap-1.5 rounded-lg border-2 border-[var(--accent-sage-dark)] bg-[var(--accent-sage-dark)] px-3.5 py-1.5 text-xs font-bold text-white shadow-xs transition hover:bg-[var(--accent-sage)] cursor-pointer">
+                <Upload className="h-3.5 w-3.5" />
+                <span>{uploading ? "Reading File..." : "+ Upload PDF / File"}</span>
+                <input
+                  type="file"
+                  accept=".pdf,.txt,.md,.tex"
+                  onChange={handleFileUpload}
+                  disabled={uploading}
+                  className="hidden"
+                />
+              </label>
+
+              <button
+                type="button"
+                onClick={() => setShowGuide((g) => !g)}
+                className="inline-flex items-center gap-1 rounded-lg border border-[var(--border-paper-strong)] bg-[var(--surface-subtle)] px-2.5 py-1.5 text-xs font-medium text-[var(--ink-secondary)] hover:text-[var(--ink-primary)] cursor-pointer"
+              >
+                <HelpCircle className="h-3.5 w-3.5 text-[var(--accent-amber)]" />
+                <span>{showGuide ? "Hide Guide" : "How This Works"}</span>
+              </button>
             </div>
           </div>
 
-          {/* Tab Navigation Pill Bar */}
+          {/* Friendly 4-Step Visual Guide Banner */}
+          {showGuide && (
+            <div className="rounded-xl border border-[var(--accent-sage-border)] bg-[var(--accent-sage-light)]/60 p-3 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                <div className="rounded-lg bg-white p-2.5 border border-[var(--border-paper)]">
+                  <strong className="text-[var(--accent-sage-dark)] block font-mono-provenance text-[10px] uppercase">
+                    Step 1: Add Your Data
+                  </strong>
+                  <span className="text-[var(--ink-secondary)] text-[11px]">
+                    Click <strong>+ Upload PDF</strong> or <strong>+ Add Topic</strong> above to use your own file or subject!
+                  </span>
+                </div>
+                <div className="rounded-lg bg-white p-2.5 border border-[var(--border-paper)]">
+                  <strong className="text-[var(--accent-sage-dark)] block font-mono-provenance text-[10px] uppercase">
+                    Step 2: Ask the AI Helper
+                  </strong>
+                  <span className="text-[var(--ink-secondary)] text-[11px]">
+                    Type any question in the <strong>AI Chat Box on the right</strong> (or click a sample question).
+                  </span>
+                </div>
+                <div className="rounded-lg bg-white p-2.5 border border-[var(--border-paper)]">
+                  <strong className="text-[var(--accent-amber)] block font-mono-provenance text-[10px] uppercase">
+                    Step 3: Click Yellow Proofs
+                  </strong>
+                  <span className="text-[var(--ink-secondary)] text-[11px]">
+                    Click any <strong>yellow proof card [1]</strong> in the AI&apos;s answer to highlight the exact sentence!
+                  </span>
+                </div>
+                <div className="rounded-lg bg-white p-2.5 border border-[var(--border-paper)]">
+                  <strong className="text-[var(--accent-sage-dark)] block font-mono-provenance text-[10px] uppercase">
+                    Step 4: Compare &amp; Explore
+                  </strong>
+                  <span className="text-[var(--ink-secondary)] text-[11px]">
+                    Click the tabs below to see the <strong>Compare Table</strong>, <strong>Visual Map</strong>, and <strong>New Ideas</strong>.
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Success Notification Banner after Upload / Topic Ingestion */}
+          {uploadSuccessBanner && (
+            <div className="rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-xs font-medium text-emerald-950 flex items-center justify-between">
+              <span>{uploadSuccessBanner}</span>
+              <button
+                onClick={() => setUploadSuccessBanner(null)}
+                className="text-emerald-700 hover:text-emerald-950 font-bold ml-4"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
+          {uploadError && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-xs text-red-700 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                <span>{uploadError}</span>
+              </div>
+              <button onClick={() => setUploadError(null)} className="font-bold">
+                ✕
+              </button>
+            </div>
+          )}
+
+          {/* Row 2: Numbered, Plain-English Tab Bar */}
           <div className="flex items-center gap-1 overflow-x-auto rounded-lg border border-[var(--border-paper)] bg-[var(--surface-subtle)] p-1 text-xs">
             <button
               onClick={() => setActiveTab("reader")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-medium transition ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-medium transition shrink-0 cursor-pointer ${
                 activeTab === "reader"
-                  ? "bg-white text-[var(--ink-primary)] shadow-xs font-semibold"
+                  ? "bg-white text-[var(--ink-primary)] shadow-xs font-bold"
                   : "text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
               }`}
             >
               <BookOpen className="h-3.5 w-3.5 text-[var(--accent-sage)]" />
-              PDF Reader & AI
+              1. Read &amp; Ask AI
             </button>
             <button
               onClick={() => setActiveTab("library")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-medium transition ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-medium transition shrink-0 cursor-pointer ${
                 activeTab === "library"
-                  ? "bg-white text-[var(--ink-primary)] shadow-xs font-semibold"
+                  ? "bg-white text-[var(--ink-primary)] shadow-xs font-bold"
                   : "text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
               }`}
             >
               <Layers className="h-3.5 w-3.5 text-[var(--accent-sage)]" />
-              Paper Library ({papers.length})
+              2. My Papers ({papers.length})
             </button>
             <button
               onClick={() => setActiveTab("comparison")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-medium transition ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-medium transition shrink-0 cursor-pointer ${
                 activeTab === "comparison"
-                  ? "bg-white text-[var(--ink-primary)] shadow-xs font-semibold"
+                  ? "bg-white text-[var(--ink-primary)] shadow-xs font-bold"
                   : "text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
               }`}
             >
               <Columns className="h-3.5 w-3.5 text-[var(--accent-sage)]" />
-              Comparison Matrix
+              3. Compare Table
             </button>
             <button
               onClick={() => setActiveTab("canvas")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-medium transition ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-medium transition shrink-0 cursor-pointer ${
                 activeTab === "canvas"
-                  ? "bg-white text-[var(--ink-primary)] shadow-xs font-semibold"
+                  ? "bg-white text-[var(--ink-primary)] shadow-xs font-bold"
                   : "text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
               }`}
             >
               <GitBranch className="h-3.5 w-3.5 text-[var(--accent-sage)]" />
-              Research Canvas
+              4. Visual Map
             </button>
             <button
               onClick={() => setActiveTab("gaps")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-medium transition ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-medium transition shrink-0 cursor-pointer ${
                 activeTab === "gaps"
-                  ? "bg-white text-[var(--ink-primary)] shadow-xs font-semibold"
+                  ? "bg-white text-[var(--ink-primary)] shadow-xs font-bold"
                   : "text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
               }`}
             >
               <Sparkles className="h-3.5 w-3.5 text-[var(--accent-amber)]" />
-              Gap Explorer
+              5. New Ideas (Gaps)
             </button>
             <button
               onClick={() => setActiveTab("notes")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-medium transition ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-medium transition shrink-0 cursor-pointer ${
                 activeTab === "notes"
-                  ? "bg-white text-[var(--ink-primary)] shadow-xs font-semibold"
+                  ? "bg-white text-[var(--ink-primary)] shadow-xs font-bold"
                   : "text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
               }`}
             >
               <FileText className="h-3.5 w-3.5 text-[var(--accent-sage)]" />
-              Notes ({notes.length})
+              6. My Notes ({notes.length})
             </button>
           </div>
         </div>
@@ -435,24 +823,26 @@ export default function ProjectWorkspacePage({
       {/* Main Workspace Body */}
       <main className="flex-1 overflow-hidden">
         {/* ======================================================== */}
-        {/* TAB 1: SPLIT-PANE PDF READER & CONTEXTUAL EVIDENCE AI */}
+        {/* TAB 1: SPLIT-PANE PAPER READER & AI HELPER */}
         {/* ======================================================== */}
         {activeTab === "reader" && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 h-[calc(100vh-140px)]">
-            {/* Left Pane: PDF Document Reader (7 cols) */}
-            <div className="lg:col-span-7 flex flex-col border-b lg:border-b-0 lg:border-r border-[var(--border-paper)] bg-white">
+          <div className="grid grid-cols-1 lg:grid-cols-12 h-[calc(100vh-195px)] min-h-[540px]">
+            {/* Left Pane: Paper Reader (7 cols) */}
+            <div className="lg:col-span-7 flex flex-col border-b lg:border-b-0 lg:border-r border-[var(--border-paper)] bg-white overflow-hidden">
               {/* Document Subheader / Toolbar */}
-              <div className="flex items-center justify-between border-b border-[var(--border-paper)] bg-[var(--surface-subtle)] px-4 py-2 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border-paper)] bg-[var(--surface-subtle)] px-4 py-2.5 text-xs">
                 {/* Paper Selector Dropdown */}
-                <div className="flex items-center gap-2 max-w-sm truncate">
-                  <BookOpen className="h-4 w-4 text-[var(--accent-sage)] shrink-0" />
+                <div className="flex items-center gap-2 max-w-md truncate">
+                  <span className="font-mono-provenance text-[10px] font-bold uppercase text-[var(--accent-sage-dark)] shrink-0">
+                    📄 Reading:
+                  </span>
                   <select
                     value={selectedPaper?.id || ""}
                     onChange={(e) => {
                       const p = papers.find((x) => x.id === e.target.value);
                       if (p) setSelectedPaper(p);
                     }}
-                    className="rounded border border-[var(--border-paper)] bg-white px-2 py-1 text-xs font-semibold text-[var(--ink-primary)] truncate focus:outline-none"
+                    className="rounded border border-[var(--border-paper-strong)] bg-white px-2.5 py-1 text-xs font-bold text-[var(--ink-primary)] truncate focus:outline-none"
                   >
                     {papers.map((p) => (
                       <option key={p.id} value={p.id}>
@@ -467,21 +857,24 @@ export default function ProjectWorkspacePage({
                   <button
                     onClick={() => setCurrentPageNum((p) => Math.max(1, p - 1))}
                     disabled={currentPageNum <= 1}
-                    className="rounded p-1 hover:bg-zinc-200 disabled:opacity-30"
+                    className="rounded border border-[var(--border-paper)] bg-white px-2 py-1 hover:bg-zinc-100 disabled:opacity-30 flex items-center gap-1 cursor-pointer"
                     title="Previous page"
                   >
-                    <ChevronLeft className="h-4 w-4" />
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                    <span>Prev</span>
                   </button>
-                  <span>
-                    Page {currentPageNum} of {pages.length > 0 ? pages.length : selectedPaper?.page_count || 1}
+                  <span className="font-bold text-[var(--ink-primary)] px-1">
+                    Page {currentPageNum} of{" "}
+                    {pages.length > 0 ? pages.length : selectedPaper?.page_count || 1}
                   </span>
                   <button
                     onClick={() => setCurrentPageNum((p) => Math.min(pages.length, p + 1))}
                     disabled={currentPageNum >= pages.length}
-                    className="rounded p-1 hover:bg-zinc-200 disabled:opacity-30"
+                    className="rounded border border-[var(--border-paper)] bg-white px-2 py-1 hover:bg-zinc-100 disabled:opacity-30 flex items-center gap-1 cursor-pointer"
                     title="Next page"
                   >
-                    <ChevronRight className="h-4 w-4" />
+                    <span>Next</span>
+                    <ChevronRight className="h-3.5 w-3.5" />
                   </button>
                 </div>
               </div>
@@ -492,30 +885,25 @@ export default function ProjectWorkspacePage({
                   {/* Paper Header / Metadata Stamp */}
                   <div className="border-b border-[var(--border-paper)] pb-4 text-center">
                     <span className="font-mono-provenance text-[11px] uppercase tracking-widest text-[var(--ink-muted)]">
-                      {selectedPaper?.journal_or_venue || "Academic Proceedings"}
+                      {selectedPaper?.journal_or_venue || "Uploaded Paper"} • Page {currentPageNum}
                     </span>
                     <h2 className="text-xl sm:text-2xl font-bold mt-1 text-[var(--ink-primary)]">
                       {selectedPaper?.title}
                     </h2>
                     <p className="font-sans-ui text-xs text-[var(--ink-muted)] mt-1.5">
-                      {selectedPaper?.authors.join(", ")}
+                      Authors: {selectedPaper?.authors.join(", ")}
                     </p>
-                    {selectedPaper?.doi && (
-                      <span className="font-mono-provenance text-[10px] text-[var(--accent-sage-dark)] mt-1 block">
-                        DOI: {selectedPaper.doi}
-                      </span>
-                    )}
                   </div>
 
                   {/* Render Page Content with Passage Highlight */}
                   <div className="prose max-w-none text-[var(--ink-secondary)]">
                     {highlightedText && activePage?.text_content.includes(highlightedText) ? (
-                      <div>
+                      <div className="whitespace-pre-wrap">
                         {activePage.text_content.split(highlightedText).map((part, i, arr) => (
                           <span key={i}>
                             {part}
                             {i < arr.length - 1 && (
-                              <mark className="rounded px-1 py-0.5 citation-target-highlight font-medium text-[var(--ink-primary)]">
+                              <mark className="rounded px-1.5 py-0.5 citation-target-highlight font-semibold text-[var(--ink-primary)]">
                                 {highlightedText}
                               </mark>
                             )}
@@ -523,76 +911,99 @@ export default function ProjectWorkspacePage({
                         ))}
                       </div>
                     ) : (
-                      <p className="whitespace-pre-wrap">{activePage?.text_content || "Loading paper text..."}</p>
+                      <p className="whitespace-pre-wrap">
+                        {activePage?.text_content || "Loading paper text..."}
+                      </p>
                     )}
                   </div>
                 </div>
               </div>
 
-              {/* Provenance Footer Bar */}
+              {/* Simple Footer Bar */}
               <div className="border-t border-[var(--border-paper)] bg-[var(--surface-paper)] px-4 py-2.5 flex items-center justify-between text-xs font-mono-provenance text-[var(--ink-muted)]">
                 <div className="flex items-center gap-2">
                   <CheckCircle className="h-3.5 w-3.5 text-[var(--accent-sage)]" />
-                  <span>Physical Page {currentPageNum} Provenance Verified</span>
+                  <span>
+                    Showing Real Extracted Text from Page {currentPageNum}
+                  </span>
                 </div>
                 {highlightedText && (
                   <button
                     onClick={() => setHighlightedText(null)}
-                    className="text-[var(--accent-amber)] hover:underline"
+                    className="text-[var(--accent-amber)] font-semibold hover:underline cursor-pointer"
                   >
-                    Clear passage highlight
+                    Clear yellow highlight
                   </button>
                 )}
               </div>
             </div>
 
-            {/* Right Pane: Contextual Evidence-Grounded AI Assistant (5 cols) */}
-            <div className="lg:col-span-5 flex flex-col bg-[var(--surface-paper)]">
+            {/* Right Pane: AI Study & Research Helper (5 cols) */}
+            <div className="lg:col-span-5 flex flex-col bg-[var(--surface-paper)] overflow-hidden">
               {/* AI Assistant Header */}
               <div className="border-b border-[var(--border-paper)] bg-white px-4 py-3 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Sparkles className="h-4 w-4 text-[var(--accent-sage)]" />
                   <h3 className="font-editorial text-sm font-bold text-[var(--ink-primary)]">
-                    Evidence-Grounded Assistant
+                    🤖 AI Study &amp; Research Helper
                   </h3>
                 </div>
                 <span className="font-mono-provenance text-[10px] text-[var(--accent-sage-dark)] bg-[var(--accent-sage-light)] px-2 py-0.5 rounded font-semibold">
-                  Strict Citations
+                  100% Real Page Proof
                 </span>
               </div>
 
               {/* Chat Dialogue Stream */}
               <div className="flex-1 overflow-y-auto p-4 space-y-4">
                 {chatMessages.length === 0 ? (
-                  <div className="text-center py-10 px-4">
-                    <BookOpen className="h-8 w-8 text-[var(--ink-muted)] mx-auto mb-2 opacity-50" />
+                  <div className="text-center py-6 px-3">
+                    <BookOpen className="h-8 w-8 text-[var(--accent-sage)] mx-auto mb-2 opacity-80" />
                     <h4 className="font-editorial text-base font-bold text-[var(--ink-primary)]">
-                      Inquire into Project Literature
+                      Ask Anything About Your Papers!
                     </h4>
                     <p className="text-xs text-[var(--ink-secondary)] mt-1 max-w-sm mx-auto">
-                      Ask questions regarding methodology, findings, theoretical frameworks, or
-                      empirical contradictions across your collected papers.
+                      Currently reading:{" "}
+                      <strong className="text-[var(--ink-primary)]">
+                        {selectedPaper?.title}
+                      </strong>
+                      . Click a sample question below or type your own!
                     </p>
-                    <div className="mt-4 flex flex-col gap-2 max-w-xs mx-auto text-xs">
+                    <div className="mt-4 flex flex-col gap-2 max-w-sm mx-auto text-xs">
                       <button
-                        onClick={() =>
-                          setInputQuestion(
-                            "What are the key differences between Transformer attention and recurrent seq2seq models?"
+                        type="button"
+                        onClick={(e) =>
+                          handleSendMessage(
+                            e,
+                            `Explain the main idea of "${selectedPaper?.title || "this paper"}" in simple words.`
                           )
                         }
-                        className="rounded border border-[var(--border-paper)] bg-white p-2 text-left hover:border-[var(--accent-sage-border)]"
+                        className="rounded-lg border border-[var(--border-paper-strong)] bg-white p-2.5 text-left font-medium text-[var(--ink-primary)] hover:border-[var(--accent-sage-dark)] hover:bg-[var(--accent-sage-light)]/30 transition cursor-pointer"
                       >
-                        “What are the key differences between Transformer attention and recurrent seq2seq?”
+                        💬 &ldquo;Explain the main idea of this paper in simple words.&rdquo;
                       </button>
                       <button
-                        onClick={() =>
-                          setInputQuestion(
-                            "How does Lewis et al. define parametric vs non-parametric memory in RAG?"
+                        type="button"
+                        onClick={(e) =>
+                          handleSendMessage(
+                            e,
+                            `What methods or experiments did they use in "${selectedPaper?.title || "this paper"}", and what were the results?`
                           )
                         }
-                        className="rounded border border-[var(--border-paper)] bg-white p-2 text-left hover:border-[var(--accent-sage-border)]"
+                        className="rounded-lg border border-[var(--border-paper-strong)] bg-white p-2.5 text-left font-medium text-[var(--ink-primary)] hover:border-[var(--accent-sage-dark)] hover:bg-[var(--accent-sage-light)]/30 transition cursor-pointer"
                       >
-                        “How does Lewis et al. define parametric vs non-parametric memory in RAG?”
+                        💬 &ldquo;What methods did they use and what were the results?&rdquo;
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) =>
+                          handleSendMessage(
+                            e,
+                            "What are the main limitations, weaknesses, or unsolved problems mentioned in the papers?"
+                          )
+                        }
+                        className="rounded-lg border border-[var(--border-paper-strong)] bg-white p-2.5 text-left font-medium text-[var(--ink-primary)] hover:border-[var(--accent-sage-dark)] hover:bg-[var(--accent-sage-light)]/30 transition cursor-pointer"
+                      >
+                        💬 &ldquo;What are the weaknesses or unsolved problems mentioned?&rdquo;
                       </button>
                     </div>
                   </div>
@@ -600,49 +1011,74 @@ export default function ProjectWorkspacePage({
                   chatMessages.map((msg) => (
                     <div
                       key={msg.id}
-                      className={`rounded-lg p-3.5 text-xs ${
+                      className={`rounded-xl p-3.5 text-xs ${
                         msg.sender === "user"
                           ? "bg-white border border-[var(--border-paper)] ml-6"
-                          : "bg-white border border-[var(--border-paper-strong)] shadow-xs mr-2 space-y-2.5"
+                          : "bg-white border-2 border-[var(--border-paper-strong)] shadow-xs mr-1 space-y-3"
                       }`}
                     >
                       <div className="flex items-center justify-between text-[10px] font-mono-provenance text-[var(--ink-muted)] mb-1">
-                        <span className="font-semibold text-[var(--ink-primary)]">
-                          {msg.sender === "user" ? "Researcher Inquiry" : "SOURCEWISE Synthesis"}
+                        <span className="font-bold text-[var(--ink-primary)]">
+                          {msg.sender === "user"
+                            ? "🧑 Your Question"
+                            : "🤖 AI Answer (Backed by Your Papers)"}
                         </span>
-                        <span>{new Date(msg.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                        <span>
+                          {new Date(msg.created_at).toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </span>
                       </div>
 
-                      <div className="whitespace-pre-wrap leading-relaxed text-[var(--ink-secondary)] font-sans-ui">
+                      <div className="whitespace-pre-wrap leading-relaxed text-[var(--ink-primary)] font-sans-ui">
                         {msg.content}
                       </div>
 
-                      {/* Render Citations Badges */}
+                      {/* Explicit AI Reasoning / Thinking Steps */}
+                      {msg.thinking && (
+                        <details className="mt-2 text-xs border border-[var(--border-paper)] bg-[var(--surface-subtle)] rounded-lg p-2.5 group">
+                          <summary className="cursor-pointer font-mono-provenance text-[10px] font-bold uppercase tracking-wider text-[var(--ink-secondary)] hover:text-[var(--accent-sage-dark)] flex items-center justify-between list-none">
+                            <span className="flex items-center gap-1.5">
+                              <span className="h-2 w-2 rounded-full bg-[var(--accent-sage)] inline-block"></span>
+                              🧠 How the AI Thought About This (Click to see steps ↓)
+                            </span>
+                            <span className="text-[10px] font-mono-provenance text-[var(--ink-muted)]">
+                              {msg.modelUsed || "Smart Reader"}
+                            </span>
+                          </summary>
+                          <div className="mt-2 pt-2 border-t border-[var(--border-paper)] font-mono-provenance text-[11px] leading-relaxed text-[var(--ink-secondary)] whitespace-pre-wrap bg-white p-2.5 rounded border border-[var(--border-paper)]">
+                            {msg.thinking}
+                          </div>
+                        </details>
+                      )}
+
+                      {/* Render Clickable Page Proof Citations */}
                       {msg.citations && msg.citations.length > 0 && (
-                        <div className="border-t border-[var(--border-paper)] pt-2 space-y-1.5">
+                        <div className="border-t border-[var(--border-paper)] pt-2.5 space-y-1.5">
                           <span className="font-mono-provenance text-[10px] font-bold text-[var(--accent-sage-dark)] uppercase block">
-                            Verified Source Citations ({msg.citations.length}):
+                            📌 Exact Page Proof ({msg.citations.length}) — Click any box to highlight it on the left:
                           </span>
-                          <div className="space-y-1">
+                          <div className="space-y-1.5">
                             {msg.citations.map((cit, idx) => (
                               <button
                                 key={cit.id || idx}
                                 onClick={() => handleCitationClick(cit)}
-                                className="w-full text-left rounded border border-[var(--accent-amber-border)] bg-amber-50/70 p-2 text-[11px] hover:bg-amber-100 transition flex items-start gap-2"
+                                className="w-full text-left rounded-lg border-2 border-[var(--accent-amber-border)] bg-amber-50/80 p-2.5 text-[11px] hover:bg-amber-100 transition flex items-start gap-2 cursor-pointer"
                               >
                                 <span className="font-mono-provenance font-bold text-[var(--accent-amber)] shrink-0">
                                   [{idx + 1}]
                                 </span>
-                                <div className="flex-1 truncate">
-                                  <div className="font-semibold text-[var(--ink-primary)] truncate">
-                                    {cit.document_title || "Paper Source"} • Page {cit.page_number}
+                                <div className="flex-1 min-w-0">
+                                  <div className="font-bold text-[var(--ink-primary)] truncate">
+                                    {cit.document_title || "Your Paper"} • Page {cit.page_number}
                                   </div>
-                                  <div className="italic text-[var(--ink-secondary)] truncate">
+                                  <div className="italic text-[var(--ink-secondary)] line-clamp-2 mt-0.5">
                                     “{cit.passage_quote}”
                                   </div>
                                 </div>
-                                <span className="font-mono-provenance text-[10px] text-[var(--accent-sage-dark)] shrink-0 font-medium">
-                                  Jump →
+                                <span className="font-mono-provenance text-[10px] bg-amber-200/80 text-amber-950 px-2 py-0.5 rounded shrink-0 font-bold">
+                                  Show Page {cit.page_number} →
                                 </span>
                               </button>
                             ))}
@@ -650,10 +1086,18 @@ export default function ProjectWorkspacePage({
                         </div>
                       )}
 
-                      {/* Uncertainty Callout */}
+                      {/* Key Takeaway Callout */}
+                      {msg.interpretation && (
+                        <div className="rounded-lg border-l-2 border-[var(--accent-sage)] bg-[var(--accent-sage-light)]/60 p-2.5 text-[11px] text-[var(--accent-sage-dark)]">
+                          <strong className="block font-bold">💡 Simple Takeaway:</strong>
+                          {msg.interpretation}
+                        </div>
+                      )}
+
+                      {/* What's Not Covered Callout */}
                       {msg.uncertainty && (
-                        <div className="rounded border-l-2 border-amber-500 bg-amber-50 p-2 text-[10px] text-amber-900">
-                          <strong className="block font-semibold">Scope & Uncertainty:</strong>
+                        <div className="rounded-lg border-l-2 border-amber-500 bg-amber-50/70 p-2 text-[10px] text-amber-900">
+                          <strong className="block font-bold">⚠️ Good to Know:</strong>
                           {msg.uncertainty}
                         </div>
                       )}
@@ -663,26 +1107,30 @@ export default function ProjectWorkspacePage({
                 {chatLoading && (
                   <div className="rounded-lg border border-[var(--border-paper)] bg-white p-3 text-xs text-[var(--ink-muted)] flex items-center gap-2">
                     <Sparkles className="h-4 w-4 animate-spin text-[var(--accent-sage)]" />
-                    <span>Retrieving authorized evidence & validating citations...</span>
+                    <span>Reading your papers &amp; finding exact page proof...</span>
                   </div>
                 )}
               </div>
 
               {/* Chat Input Bar */}
-              <form onSubmit={handleSendMessage} className="border-t border-[var(--border-paper)] bg-white p-3 flex gap-2">
+              <form
+                onSubmit={(e) => handleSendMessage(e)}
+                className="border-t border-[var(--border-paper)] bg-white p-3 flex gap-2"
+              >
                 <input
                   type="text"
                   value={inputQuestion}
                   onChange={(e) => setInputQuestion(e.target.value)}
-                  placeholder="Ask a question about your collected literature..."
-                  className="flex-1 rounded border border-[var(--border-paper)] bg-[var(--surface-paper)] px-3 py-2 text-xs focus:border-[var(--accent-sage)] focus:outline-none"
+                  placeholder="Type a question in simple words (e.g. What is this paper about?)..."
+                  className="flex-1 rounded-lg border border-[var(--border-paper-strong)] bg-[var(--surface-paper)] px-3 py-2 text-xs focus:border-[var(--accent-sage)] focus:outline-none"
                 />
                 <button
                   type="submit"
                   disabled={chatLoading || !inputQuestion.trim()}
-                  className="rounded border border-[var(--accent-sage-dark)] bg-[var(--accent-sage-dark)] px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-[var(--accent-sage)] disabled:opacity-40"
-                  aria-label="Submit question"
+                  className="rounded-lg border border-[var(--accent-sage-dark)] bg-[var(--accent-sage-dark)] px-4 py-2 text-xs font-semibold text-white transition hover:bg-[var(--accent-sage)] disabled:opacity-40 flex items-center gap-1.5 cursor-pointer"
+                  aria-label="Ask AI"
                 >
+                  <span>Ask AI</span>
                   <Send className="h-3.5 w-3.5" />
                 </button>
               </form>
@@ -691,89 +1139,98 @@ export default function ProjectWorkspacePage({
         )}
 
         {/* ======================================================== */}
-        {/* TAB 2: PAPER LIBRARY */}
+        {/* TAB 2: MY PAPERS (PAPER LIBRARY) */}
         {/* ======================================================== */}
         {activeTab === "library" && (
           <div className="p-6 sm:p-10 max-w-6xl mx-auto space-y-8">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[var(--border-paper)] pb-4">
               <div>
                 <h2 className="font-editorial text-2xl font-bold text-[var(--ink-primary)]">
-                  Project Literature Collection
+                  My Uploaded Papers &amp; Topics ({papers.length})
                 </h2>
                 <p className="text-xs text-[var(--ink-secondary)] mt-1">
-                  Upload PDFs to extract bibliographic metadata, chunk text, and establish verifiable citations.
+                  All the PDFs, text files, and topics inside this project. Click &ldquo;Read &amp; Ask AI&rdquo; on any card to open it!
                 </p>
               </div>
 
-              {/* Upload Input Button */}
-              <label className="inline-flex items-center gap-2 rounded border border-[var(--accent-sage-dark)] bg-[var(--accent-sage-dark)] px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-[var(--accent-sage)] cursor-pointer self-start sm:self-auto">
-                <Upload className="h-4 w-4" />
-                <span>{uploading ? "Ingesting & Chunking..." : "Upload Academic PDF"}</span>
-                <input
-                  type="file"
-                  accept=".pdf"
-                  onChange={handleFileUpload}
-                  disabled={uploading}
-                  className="hidden"
-                />
-              </label>
-            </div>
+              <div className="flex flex-wrap items-center gap-2.5 self-start sm:self-auto">
+                <button
+                  type="button"
+                  onClick={() => setShowTopicModal(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-paper-strong)] bg-white px-3.5 py-2 text-xs font-semibold text-[var(--ink-primary)] shadow-xs transition hover:bg-[var(--surface-subtle)] cursor-pointer"
+                >
+                  <FilePlus className="h-4 w-4 text-[var(--accent-sage-dark)]" />
+                  <span>+ Add Topic or Paste Text</span>
+                </button>
 
-            {uploadError && (
-              <div className="rounded border border-red-200 bg-red-50 p-3 text-xs text-red-700 flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 shrink-0" />
-                <span>{uploadError}</span>
+                <label className="inline-flex items-center gap-2 rounded-lg border border-[var(--accent-sage-dark)] bg-[var(--accent-sage-dark)] px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-[var(--accent-sage)] cursor-pointer">
+                  <Upload className="h-4 w-4" />
+                  <span>{uploading ? "Reading File..." : "+ Upload File (.pdf, .txt, .md)"}</span>
+                  <input
+                    type="file"
+                    accept=".pdf,.txt,.md,.tex"
+                    onChange={handleFileUpload}
+                    disabled={uploading}
+                    className="hidden"
+                  />
+                </label>
               </div>
-            )}
+            </div>
 
             {/* Papers Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {papers.map((paper) => (
                 <div
                   key={paper.id}
-                  className="flex flex-col justify-between rounded-xl border border-[var(--border-paper)] bg-white p-5 shadow-xs transition hover:border-[var(--accent-sage-border)] hover:shadow-sm"
+                  className="flex flex-col justify-between rounded-xl border border-[var(--border-paper)] bg-white p-5 shadow-xs transition hover:border-[var(--accent-sage-border)] hover:shadow-md"
                 >
                   <div>
                     <div className="flex items-center justify-between text-[10px] font-mono-provenance text-[var(--ink-muted)] mb-2">
-                      <span className="rounded bg-[var(--surface-subtle)] px-2 py-0.5 font-medium text-[var(--ink-secondary)]">
-                        {paper.publication_year || 2024}
+                      <span className="rounded bg-[var(--surface-subtle)] px-2 py-0.5 font-semibold text-[var(--ink-secondary)]">
+                        Year: {paper.publication_year || 2024}
                       </span>
-                      <span className="inline-flex items-center gap-1 text-[var(--accent-sage-dark)] font-semibold">
-                        <CheckCircle className="h-3 w-3" />
-                        {paper.processing_status}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex items-center gap-1 text-[var(--accent-sage-dark)] font-bold">
+                          <CheckCircle className="h-3 w-3" />
+                          Ready
+                        </span>
+                        {papers.length > 1 && (
+                          <button
+                            onClick={() => handleDeletePaper(paper.id)}
+                            className="text-zinc-400 hover:text-red-600 p-0.5 cursor-pointer"
+                            title="Remove paper"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     <h3 className="font-editorial text-base font-bold text-[var(--ink-primary)] line-clamp-2">
                       {paper.title}
                     </h3>
                     <p className="text-xs text-[var(--ink-secondary)] mt-1 line-clamp-1">
-                      {paper.authors.join(", ")}
+                      By {paper.authors.join(", ")}
                     </p>
                     {paper.journal_or_venue && (
                       <p className="text-[11px] text-[var(--ink-muted)] mt-1 italic line-clamp-1">
                         {paper.journal_or_venue}
                       </p>
                     )}
-                    {paper.doi && (
-                      <p className="font-mono-provenance text-[10px] text-[var(--ink-muted)] mt-2">
-                        DOI: {paper.doi}
-                      </p>
-                    )}
                   </div>
 
                   <div className="mt-6 pt-3 border-t border-[var(--border-paper)] flex items-center justify-between text-xs">
                     <span className="font-mono-provenance text-[11px] text-[var(--ink-muted)]">
-                      {paper.page_count} Pages
+                      {paper.page_count} Page{paper.page_count === 1 ? "" : "s"}
                     </span>
                     <button
                       onClick={() => {
                         setSelectedPaper(paper);
                         setActiveTab("reader");
                       }}
-                      className="text-[var(--accent-sage-dark)] font-semibold hover:underline flex items-center gap-1"
+                      className="rounded bg-[var(--accent-sage-light)] px-3 py-1 text-[var(--accent-sage-dark)] font-bold hover:bg-[var(--accent-sage-dark)] hover:text-white transition flex items-center gap-1 cursor-pointer"
                     >
-                      <span>Read Paper</span>
+                      <span>Read &amp; Ask AI</span>
                       <ChevronRight className="h-3 w-3" />
                     </button>
                   </div>
@@ -784,27 +1241,25 @@ export default function ProjectWorkspacePage({
         )}
 
         {/* ======================================================== */}
-        {/* TAB 3: LITERATURE COMPARISON MATRIX */}
+        {/* TAB 3: SIDE-BY-SIDE COMPARE TABLE */}
         {/* ======================================================== */}
         {activeTab === "comparison" && (
           <div className="p-6 sm:p-10 max-w-7xl mx-auto space-y-6">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[var(--border-paper)] pb-4">
               <div>
                 <h2 className="font-editorial text-2xl font-bold text-[var(--ink-primary)]">
-                  Cross-Paper Comparative Matrix
+                  Side-by-Side Paper Comparison Table
                 </h2>
                 <p className="text-xs text-[var(--ink-secondary)] mt-1">
-                  Synthesize key methodological dimensions across selected literature. Values without source evidence are marked explicitly.
+                  Compare all {papers.length} papers in your project at a glance: What was their goal? How did they do it? What worked? What didn&apos;t work?
                 </p>
               </div>
               <button
-                onClick={() => {
-                  alert("Exported comparative matrix to BibTeX & Markdown format.");
-                }}
-                className="inline-flex items-center gap-1.5 rounded border border-[var(--border-paper-strong)] bg-white px-3.5 py-1.5 text-xs font-semibold text-[var(--ink-primary)] hover:bg-[var(--surface-subtle)] self-start sm:self-auto"
+                onClick={handleDownloadComparison}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-paper-strong)] bg-white px-3.5 py-2 text-xs font-semibold text-[var(--ink-primary)] hover:bg-[var(--surface-subtle)] self-start sm:self-auto cursor-pointer"
               >
                 <Download className="h-3.5 w-3.5" />
-                <span>Export Synthesis</span>
+                <span>Download Table (.md)</span>
               </button>
             </div>
 
@@ -813,12 +1268,12 @@ export default function ProjectWorkspacePage({
               <table className="w-full text-left text-xs border-collapse">
                 <thead>
                   <tr className="border-b border-[var(--border-paper)] bg-[var(--surface-subtle)] font-mono-provenance text-[11px] text-[var(--ink-primary)]">
-                    <th className="p-4 font-bold min-w-[200px]">Academic Paper</th>
-                    <th className="p-4 font-bold min-w-[220px]">Research Objective</th>
-                    <th className="p-4 font-bold min-w-[220px]">Methodology / Architecture</th>
-                    <th className="p-4 font-bold min-w-[180px]">Dataset / Corpus</th>
-                    <th className="p-4 font-bold min-w-[220px]">Key Findings</th>
-                    <th className="p-4 font-bold min-w-[220px]">Stated Limitations</th>
+                    <th className="p-4 font-bold min-w-[190px]">Paper Name</th>
+                    <th className="p-4 font-bold min-w-[220px]">Main Goal (What they wanted to do)</th>
+                    <th className="p-4 font-bold min-w-[220px]">How They Did It (Method)</th>
+                    <th className="p-4 font-bold min-w-[180px]">Data Tested On</th>
+                    <th className="p-4 font-bold min-w-[220px]">Main Results (What worked)</th>
+                    <th className="p-4 font-bold min-w-[220px]">Weaknesses (What didn&apos;t work)</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border-paper)] leading-relaxed">
@@ -827,8 +1282,20 @@ export default function ProjectWorkspacePage({
                       <td className="p-4 align-top font-semibold text-[var(--ink-primary)]">
                         <div className="font-editorial text-sm">{row.paper_title}</div>
                         <div className="text-[11px] text-[var(--ink-muted)] mt-0.5">
-                          {row.authors[0]} et al. ({row.year || 2024})
+                          {row.authors[0]} ({row.year || 2024})
                         </div>
+                        <button
+                          onClick={() => {
+                            const found = papers.find((p) => p.id === row.paper_id);
+                            if (found) {
+                              setSelectedPaper(found);
+                              setActiveTab("reader");
+                            }
+                          }}
+                          className="mt-2 text-[11px] text-[var(--accent-sage-dark)] font-bold hover:underline cursor-pointer"
+                        >
+                          Open Paper →
+                        </button>
                       </td>
                       <td className="p-4 align-top text-[var(--ink-secondary)]">
                         {row.values.objective?.text}
@@ -854,17 +1321,26 @@ export default function ProjectWorkspacePage({
         )}
 
         {/* ======================================================== */}
-        {/* TAB 4: RESEARCH CANVAS (INTERACTIVE GRAPH) */}
+        {/* TAB 4: VISUAL IDEA MAP (RESEARCH CANVAS) */}
         {/* ======================================================== */}
         {activeTab === "canvas" && (
-          <div className="h-[calc(100vh-140px)] flex flex-col relative overflow-hidden bg-[var(--surface-subtle)]">
+          <div className="h-[calc(100vh-195px)] min-h-[540px] flex flex-col relative overflow-hidden bg-[var(--surface-subtle)]">
             {/* Canvas Toolbar */}
-            <div className="absolute top-4 left-4 z-10 flex items-center gap-2 rounded-lg border border-[var(--border-paper)] bg-white p-2 shadow-sm text-xs font-mono-provenance">
-              <span className="font-bold text-[var(--accent-sage-dark)]">Conceptual Synthesis Map</span>
+            <div className="absolute top-4 left-4 z-10 flex flex-wrap items-center gap-2 rounded-lg border border-[var(--border-paper-strong)] bg-white p-2 shadow-sm text-xs font-mono-provenance">
+              <span className="font-bold text-[var(--accent-sage-dark)]">
+                🗺️ Visual Idea Map (Click any box to inspect)
+              </span>
               <span className="text-[var(--border-paper)]">|</span>
               <button
-                onClick={() => setZoomLevel((z) => Math.min(1.6, z + 0.1))}
-                className="p-1 hover:bg-[var(--surface-subtle)] rounded"
+                onClick={() => setShowAddNodeModal(true)}
+                className="rounded bg-[var(--accent-sage-dark)] px-2.5 py-1 text-white font-sans-ui font-semibold hover:bg-[var(--accent-sage)] cursor-pointer"
+              >
+                + Add My Own Box
+              </button>
+              <span className="text-[var(--border-paper)]">|</span>
+              <button
+                onClick={() => setZoomLevel((z) => Math.min(1.5, z + 0.1))}
+                className="p-1 hover:bg-[var(--surface-subtle)] rounded cursor-pointer"
                 title="Zoom in"
               >
                 <ZoomIn className="h-3.5 w-3.5" />
@@ -872,14 +1348,14 @@ export default function ProjectWorkspacePage({
               <span>{Math.round(zoomLevel * 100)}%</span>
               <button
                 onClick={() => setZoomLevel((z) => Math.max(0.6, z - 0.1))}
-                className="p-1 hover:bg-[var(--surface-subtle)] rounded"
+                className="p-1 hover:bg-[var(--surface-subtle)] rounded cursor-pointer"
                 title="Zoom out"
               >
                 <ZoomOut className="h-3.5 w-3.5" />
               </button>
               <button
                 onClick={() => setZoomLevel(1)}
-                className="p-1 hover:bg-[var(--surface-subtle)] rounded"
+                className="p-1 hover:bg-[var(--surface-subtle)] rounded cursor-pointer"
                 title="Reset zoom"
               >
                 <Maximize2 className="h-3.5 w-3.5" />
@@ -888,11 +1364,11 @@ export default function ProjectWorkspacePage({
 
             {/* Canvas Viewport */}
             <div
-              className="flex-1 w-full h-full relative cursor-grab active:cursor-grabbing p-10 overflow-auto"
+              className="flex-1 w-full h-full relative p-10 overflow-auto"
               style={{ transform: `scale(${zoomLevel})`, transformOrigin: "top left" }}
             >
               {/* SVG Edges Layer */}
-              <svg className="absolute inset-0 w-[1200px] h-[900px] pointer-events-none">
+              <svg className="absolute inset-0 w-[1300px] h-[950px] pointer-events-none">
                 <defs>
                   <marker
                     id="arrowhead"
@@ -926,11 +1402,10 @@ export default function ProjectWorkspacePage({
                         <text
                           x={(sourceNode.x + targetNode.x) / 2 + 120}
                           y={(sourceNode.y + targetNode.y) / 2 + 35}
-                          fill="#71717A"
+                          fill="#52525B"
                           fontSize="10"
                           textAnchor="middle"
                           fontFamily="monospace"
-                          className="bg-white px-1"
                         >
                           {edge.label}
                         </text>
@@ -949,7 +1424,7 @@ export default function ProjectWorkspacePage({
                   className={`absolute w-64 rounded-xl border p-4 shadow-sm transition-transform hover:scale-105 cursor-pointer bg-white ${
                     selectedNode?.id === node.id
                       ? "border-[var(--accent-sage-dark)] ring-2 ring-[var(--accent-sage-light)]"
-                      : "border-[var(--border-paper)]"
+                      : "border-[var(--border-paper-strong)]"
                   }`}
                 >
                   <div className="flex items-center justify-between mb-1.5">
@@ -962,13 +1437,12 @@ export default function ProjectWorkspacePage({
                           : "bg-zinc-100 text-zinc-800"
                       }`}
                     >
-                      {node.type.replace("_", " ")}
+                      {node.type === "potential_gap"
+                        ? "New Idea / Gap"
+                        : node.type === "research_question"
+                        ? "Main Question"
+                        : node.type.replace("_", " ")}
                     </span>
-                    {node.is_ai_suggested && (
-                      <span className="font-mono-provenance text-[9px] text-[var(--accent-amber)] font-semibold">
-                        AI Candidate
-                      </span>
-                    )}
                   </div>
                   <h4 className="font-editorial text-sm font-bold text-[var(--ink-primary)] line-clamp-2">
                     {node.label}
@@ -988,18 +1462,15 @@ export default function ProjectWorkspacePage({
                 <div>
                   <div className="flex items-center justify-between border-b border-[var(--border-paper)] pb-2 mb-3">
                     <span className="font-mono-provenance text-[10px] uppercase font-bold text-[var(--accent-sage-dark)]">
-                      Node Detail Inspector
+                      Box Details
                     </span>
                     <button
                       onClick={() => setSelectedNode(null)}
-                      className="text-[var(--ink-muted)] hover:text-[var(--ink-primary)]"
+                      className="text-[var(--ink-muted)] hover:text-[var(--ink-primary)] cursor-pointer"
                     >
                       ✕
                     </button>
                   </div>
-                  <span className="font-mono-provenance text-[10px] text-[var(--ink-muted)] uppercase">
-                    {selectedNode.type}
-                  </span>
                   <h3 className="font-editorial text-base font-bold text-[var(--ink-primary)] mt-1">
                     {selectedNode.label}
                   </h3>
@@ -1017,44 +1488,97 @@ export default function ProjectWorkspacePage({
                             setActiveTab("reader");
                           }
                         }}
-                        className="text-xs text-[var(--accent-sage-dark)] font-semibold hover:underline flex items-center gap-1"
+                        className="rounded-lg bg-[var(--accent-sage-dark)] px-3 py-2 text-xs text-white font-semibold hover:bg-[var(--accent-sage)] flex items-center gap-1 cursor-pointer"
                       >
-                        <span>Open source paper in reader →</span>
+                        <span>Read This Paper &amp; Ask AI →</span>
                       </button>
                     </div>
                   )}
                 </div>
 
                 <div className="border-t border-[var(--border-paper)] pt-3 text-[10px] font-mono-provenance text-[var(--ink-muted)]">
-                  Persisted to project synthesis canvas
+                  Connected to your project map
                 </div>
+              </div>
+            )}
+
+            {/* Add Custom Node Modal */}
+            {showAddNodeModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+                <form
+                  onSubmit={handleAddCanvasNode}
+                  className="w-full max-w-md rounded-xl border border-[var(--border-paper)] bg-white p-5 shadow-xl space-y-3 text-xs"
+                >
+                  <div className="flex items-center justify-between border-b border-[var(--border-paper)] pb-2">
+                    <h4 className="font-editorial text-base font-bold">Add Idea Box to Map</h4>
+                    <button type="button" onClick={() => setShowAddNodeModal(false)}>
+                      ✕
+                    </button>
+                  </div>
+                  <div>
+                    <label className="font-bold block mb-1">Box Title *</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. Test with Middle School Students"
+                      value={newNodeLabel}
+                      onChange={(e) => setNewNodeLabel(e.target.value)}
+                      className="w-full rounded border border-[var(--border-paper)] px-3 py-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="font-bold block mb-1">Short Explanation</label>
+                    <textarea
+                      rows={2}
+                      placeholder="How does this connect to your project?"
+                      value={newNodeDesc}
+                      onChange={(e) => setNewNodeDesc(e.target.value)}
+                      className="w-full rounded border border-[var(--border-paper)] px-3 py-2"
+                    />
+                  </div>
+                  <div className="flex justify-end gap-2 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowAddNodeModal(false)}
+                      className="rounded border px-3 py-1.5"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="rounded bg-[var(--accent-sage-dark)] px-4 py-1.5 text-white font-semibold"
+                    >
+                      Add to Map
+                    </button>
+                  </div>
+                </form>
               </div>
             )}
           </div>
         )}
 
         {/* ======================================================== */}
-        {/* TAB 5: RESEARCH GAP EXPLORER */}
+        {/* TAB 5: NEW PROJECT IDEAS & WHAT'S MISSING (GAPS) */}
         {/* ======================================================== */}
         {activeTab === "gaps" && (
           <div className="p-6 sm:p-10 max-w-5xl mx-auto space-y-8">
             <div className="border-b border-[var(--border-paper)] pb-4">
-              <span className="font-mono-provenance text-xs uppercase tracking-widest text-[var(--accent-amber)] font-semibold">
-                Evidence-Grounded Gap Analysis
+              <span className="font-mono-provenance text-xs uppercase tracking-widest text-[var(--accent-amber)] font-bold">
+                Find Your Next Topic
               </span>
               <h2 className="font-editorial text-2xl sm:text-3xl font-bold mt-1 text-[var(--ink-primary)]">
-                Candidate Research Opportunities
+                New Project Ideas &amp; What&apos;s Missing in These Papers
               </h2>
               <p className="text-xs text-[var(--ink-secondary)] mt-1 max-w-2xl leading-relaxed">
-                Formulated strictly from author-acknowledged limitations and methodological omissions in your collected literature. Never presented as absolute truth without external database validation.
+                Need an idea for your own essay, science project, or thesis? Here are unsolved problems and limits mentioned directly inside your uploaded papers!
               </p>
             </div>
 
-            {/* Uncertainty Warning Banner */}
+            {/* Helpful Tip Banner */}
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-950 flex items-start gap-3">
               <AlertCircle className="h-5 w-5 text-[var(--accent-amber)] shrink-0 mt-0.5" />
               <div>
-                <strong className="block font-semibold mb-0.5">Epistemic Uncertainty Notice:</strong>
+                <strong className="block font-bold mb-0.5">Helpful Note:</strong>
                 {gapAnalysis?.uncertainty_assessment}
               </div>
             </div>
@@ -1064,12 +1588,12 @@ export default function ProjectWorkspacePage({
               {gapAnalysis?.candidate_gaps.map((gap, idx) => (
                 <div
                   key={gap.id}
-                  className="rounded-xl border border-[var(--border-paper-strong)] bg-white p-6 shadow-sm space-y-4"
+                  className="rounded-xl border border-[var(--border-paper-strong)] bg-white p-6 shadow-xs space-y-4"
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <span className="font-mono-provenance text-[10px] font-bold uppercase text-[var(--accent-amber)]">
-                        Candidate Gap #{idx + 1}
+                        💡 Project Idea #{idx + 1}
                       </span>
                       <h3 className="font-editorial text-lg font-bold text-[var(--ink-primary)] mt-0.5">
                         {gap.title}
@@ -1082,14 +1606,17 @@ export default function ProjectWorkspacePage({
                   </p>
 
                   {/* Supporting Evidence */}
-                  <div className="rounded border border-[var(--border-paper)] bg-[var(--surface-paper)] p-3 text-xs space-y-2">
+                  <div className="rounded-lg border border-[var(--border-paper)] bg-[var(--surface-paper)] p-3.5 text-xs space-y-2">
                     <span className="font-mono-provenance text-[10px] uppercase font-bold text-[var(--accent-sage-dark)] block">
-                      Supporting Literature Passages:
+                      📖 Proof from Your Papers:
                     </span>
                     {gap.supporting_evidence.map((ev, i) => (
-                      <div key={i} className="text-[11px] text-[var(--ink-secondary)] pl-2 border-l-2 border-[var(--accent-sage)]">
-                        <span className="font-semibold text-[var(--ink-primary)]">
-                          {ev.paper_title} (p. {ev.page_number}):
+                      <div
+                        key={i}
+                        className="text-[11px] text-[var(--ink-secondary)] pl-2.5 border-l-2 border-[var(--accent-sage)]"
+                      >
+                        <span className="font-bold text-[var(--ink-primary)]">
+                          {ev.paper_title} (Page {ev.page_number}):
                         </span>{" "}
                         “{ev.quote}”
                       </div>
@@ -1099,9 +1626,9 @@ export default function ProjectWorkspacePage({
                   {/* Stated Limitations */}
                   <div className="text-xs space-y-1">
                     <span className="font-mono-provenance text-[10px] uppercase font-bold text-[var(--ink-muted)] block">
-                      Stated Limitations in Source:
+                      ⚠️ What the Authors Said Was Missing:
                     </span>
-                    <ul className="list-disc list-inside text-[11px] text-[var(--ink-secondary)] space-y-0.5">
+                    <ul className="list-disc list-inside text-[11px] text-[var(--ink-secondary)] space-y-1">
                       {gap.stated_limitations.map((lim, i) => (
                         <li key={i}>{lim}</li>
                       ))}
@@ -1110,10 +1637,10 @@ export default function ProjectWorkspacePage({
 
                   {/* Validation Plan */}
                   <div className="border-t border-[var(--border-paper)] pt-3 text-xs">
-                    <span className="font-mono-provenance text-[10px] uppercase font-bold text-[var(--accent-sage-dark)] block mb-1">
-                      Recommended Academic Validation Steps:
+                    <span className="font-mono-provenance text-[10px] uppercase font-bold text-[var(--accent-sage-dark)] block mb-1.5">
+                      ✅ How You Could Turn This Into Your Own Project (Step-by-Step):
                     </span>
-                    <ol className="list-decimal list-inside text-[11px] text-[var(--ink-secondary)] space-y-0.5">
+                    <ol className="list-decimal list-inside text-[11px] text-[var(--ink-secondary)] space-y-1">
                       {gap.suggested_validation_plan.map((step, i) => (
                         <li key={i}>{step}</li>
                       ))}
@@ -1126,47 +1653,50 @@ export default function ProjectWorkspacePage({
         )}
 
         {/* ======================================================== */}
-        {/* TAB 6: RESEARCH NOTES & REFERENCES */}
+        {/* TAB 6: MY STUDY NOTES */}
         {/* ======================================================== */}
         {activeTab === "notes" && (
           <div className="p-6 sm:p-10 max-w-5xl mx-auto space-y-8">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[var(--border-paper)] pb-4">
               <div>
                 <h2 className="font-editorial text-2xl font-bold text-[var(--ink-primary)]">
-                  Research Notes & References
+                  My Study Notes ({notes.length})
                 </h2>
                 <p className="text-xs text-[var(--ink-secondary)] mt-1">
-                  Keep structured notes linked to specific papers and physical page locations.
+                  Write down your own summaries or ideas and attach them to a specific paper and page number.
                 </p>
               </div>
             </div>
 
             {/* Note Creation Card */}
-            <form onSubmit={handleAddNote} className="rounded-xl border border-[var(--border-paper)] bg-white p-5 shadow-xs space-y-3">
+            <form
+              onSubmit={handleAddNote}
+              className="rounded-xl border border-[var(--border-paper)] bg-white p-5 shadow-xs space-y-3"
+            >
               <h3 className="font-editorial text-sm font-bold text-[var(--ink-primary)]">
-                Add Research Note
+                ✍️ Write a New Study Note
               </h3>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <input
                   type="text"
                   required
-                  placeholder="Note Title (e.g. Memory Constraints)"
+                  placeholder="Note Title (e.g. Main takeaway from Page 2)"
                   value={newNoteTitle}
                   onChange={(e) => setNewNoteTitle(e.target.value)}
-                  className="sm:col-span-2 rounded border border-[var(--border-paper)] px-3 py-1.5 text-xs focus:border-[var(--accent-sage)] focus:outline-none"
+                  className="sm:col-span-2 rounded border border-[var(--border-paper)] px-3 py-2 text-xs focus:border-[var(--accent-sage)] focus:outline-none"
                 />
                 <input
                   type="number"
-                  placeholder="Physical Page (optional)"
+                  placeholder="Page Number (optional)"
                   value={newNotePage}
                   onChange={(e) => setNewNotePage(e.target.value)}
-                  className="rounded border border-[var(--border-paper)] px-3 py-1.5 text-xs focus:border-[var(--accent-sage)] focus:outline-none"
+                  className="rounded border border-[var(--border-paper)] px-3 py-2 text-xs focus:border-[var(--accent-sage)] focus:outline-none"
                 />
               </div>
               <textarea
                 rows={3}
                 required
-                placeholder="Write your research analysis or citation synthesis..."
+                placeholder="Write your thoughts or summary in your own words..."
                 value={newNoteContent}
                 onChange={(e) => setNewNoteContent(e.target.value)}
                 className="w-full rounded border border-[var(--border-paper)] px-3 py-2 text-xs focus:border-[var(--accent-sage)] focus:outline-none"
@@ -1174,7 +1704,7 @@ export default function ProjectWorkspacePage({
               <div className="flex justify-end">
                 <button
                   type="submit"
-                  className="rounded border border-[var(--accent-sage-dark)] bg-[var(--accent-sage-dark)] px-4 py-1.5 text-xs font-semibold text-white transition hover:bg-[var(--accent-sage)]"
+                  className="rounded-lg border border-[var(--accent-sage-dark)] bg-[var(--accent-sage-dark)] px-4 py-2 text-xs font-semibold text-white transition hover:bg-[var(--accent-sage)] cursor-pointer"
                 >
                   Save Note
                 </button>
@@ -1184,13 +1714,16 @@ export default function ProjectWorkspacePage({
             {/* Saved Notes Stream */}
             <div className="space-y-4">
               {notes.map((note) => (
-                <div key={note.id} className="rounded-xl border border-[var(--border-paper)] bg-white p-5 shadow-xs text-xs space-y-2">
+                <div
+                  key={note.id}
+                  className="rounded-xl border border-[var(--border-paper)] bg-white p-5 shadow-xs text-xs space-y-2"
+                >
                   <div className="flex items-center justify-between">
                     <h4 className="font-editorial text-base font-bold text-[var(--ink-primary)]">
                       {note.title}
                     </h4>
                     {note.page_reference && (
-                      <span className="font-mono-provenance text-[10px] font-semibold text-[var(--accent-amber)] bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                      <span className="font-mono-provenance text-[10px] font-bold text-[var(--accent-amber)] bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
                         Page {note.page_reference}
                       </span>
                     )}
@@ -1200,7 +1733,7 @@ export default function ProjectWorkspacePage({
                   </p>
                   {note.document_title && (
                     <div className="text-[11px] text-[var(--ink-muted)] pt-2 border-t border-[var(--border-paper)]">
-                      Source Paper: <strong className="text-[var(--ink-primary)]">{note.document_title}</strong>
+                      From Paper: <strong className="text-[var(--ink-primary)]">{note.document_title}</strong>
                     </div>
                   )}
                 </div>
@@ -1209,6 +1742,234 @@ export default function ProjectWorkspacePage({
           </div>
         )}
       </main>
+
+      {/* ======================================================== */}
+      {/* ADD CUSTOM TOPIC / PASTE TEXT MODAL */}
+      {/* ======================================================== */}
+      {showTopicModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4 overflow-y-auto">
+          <div className="relative w-full max-w-2xl rounded-xl border border-[var(--border-paper)] bg-white p-6 shadow-2xl space-y-4 my-8">
+            <div className="flex items-start justify-between border-b border-[var(--border-paper)] pb-3">
+              <div>
+                <span className="font-mono-provenance text-[10px] uppercase font-bold text-[var(--accent-sage-dark)]">
+                  Add Your Own Study Material
+                </span>
+                <h3 className="font-editorial text-xl font-bold text-[var(--ink-primary)]">
+                  Add a Topic or Paste an Article / Paper
+                </h3>
+                <p className="text-xs text-[var(--ink-secondary)] mt-0.5">
+                  Type any topic you want to learn about (or paste your own article). Sourcewise will turn it into pages so you can read it and ask the AI questions!
+                </p>
+              </div>
+              <button
+                onClick={() => setShowTopicModal(false)}
+                className="rounded p-1.5 text-[var(--ink-muted)] hover:bg-[var(--surface-subtle)] hover:text-[var(--ink-primary)] cursor-pointer"
+                title="Close modal"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* 1-Click Sample Topics */}
+            <div className="bg-[var(--surface-subtle)] p-3 rounded-lg border border-[var(--border-paper)] text-xs">
+              <span className="font-mono-provenance text-[10px] uppercase font-bold text-[var(--ink-secondary)] block mb-1.5">
+                ⚡ Want to test fast? Click a sample topic below to fill the form:
+              </span>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setTopicForm({
+                      topic: "How Volcanoes and Earth's Tectonic Plates Work",
+                      title: "Understanding Volcanoes, Magma Chambers, and Plate Tectonics",
+                      authors: "National Earth Science Team, Dr. Sarah Jenkins",
+                      publication_year: "2025",
+                      content: `Earth's outer crust is broken into giant puzzle pieces called tectonic plates. When these plates crash together or pull apart, hot melted rock called magma rises from deep underground toward the surface.
+
+---
+
+Once magma breaks through the Earth's surface, it is called lava. Shield volcanoes have gentle slopes and runny lava, while stratovolcanoes build tall cones that can erupt with explosive ash clouds and pyroclastic flows.
+
+---
+
+A major challenge for volcano scientists is predicting the exact day an eruption will happen. Current sensors only measure ground shaking and gas leaks near the surface, leaving deep magma movements hard to see clearly.`,
+                    })
+                  }
+                  className="rounded border border-[var(--border-paper-strong)] bg-white px-2.5 py-1.5 text-[11px] font-semibold text-[var(--ink-primary)] hover:border-[var(--accent-sage-dark)] transition cursor-pointer"
+                >
+                  🌋 Volcanoes &amp; Earth Science (Simple)
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setTopicForm({
+                      topic: "How Sleep Helps the Brain Store Memories",
+                      title: "The Role of Deep Sleep in Memory Consolidation and Learning",
+                      authors: "Dr. Matthew Walker, Elena Rostova",
+                      publication_year: "2024",
+                      content: `When students learn new facts during the day, the brain temporarily stores them in a region called the hippocampus. However, the hippocampus has limited storage space and needs sleep to transfer memories to long-term storage.
+
+---
+
+Experiments comparing students who slept 8 hours versus students who stayed awake all night showed a 40% drop in ability to remember new vocabulary words when sleep was skipped. Deep slow-wave sleep replays daytime learning at high speed.
+
+---
+
+A key limitation in current sleep studies is that most experiments only test college students in laboratory bedrooms for one night, rather than tracking children and teenagers over a full school year at home.`,
+                    })
+                  }
+                  className="rounded border border-[var(--border-paper-strong)] bg-white px-2.5 py-1.5 text-[11px] font-semibold text-[var(--ink-primary)] hover:border-[var(--accent-sage-dark)] transition cursor-pointer"
+                >
+                  🧠 How Sleep Helps Memory
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setTopicForm({
+                      topic: "Incentivizing Reasoning Capability in LLMs via Reinforcement Learning",
+                      title: "DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning",
+                      authors: "DeepSeek-AI, Daya Guo, Dejian Yang",
+                      publication_year: "2025",
+                      content: `DeepSeek-R1 introduces reasoning models trained using large-scale reinforcement learning (RL) where the AI learns by trial and error without needing human-written examples first.
+
+---
+
+The training method uses GRPO (Group Relative Policy Optimization) with automatic math and code grading. The model teaches itself to double-check its own work and pause to think longer on hard problems.
+
+---
+
+A key limitation is that the model sometimes mixes different languages together when thinking through long problems, and can be tricked by poorly worded prompts.`,
+                    })
+                  }
+                  className="rounded border border-[var(--border-paper-strong)] bg-white px-2.5 py-1.5 text-[11px] font-semibold text-[var(--ink-primary)] hover:border-[var(--accent-sage-dark)] transition cursor-pointer"
+                >
+                  🤖 DeepSeek-R1 AI Reasoning
+                </button>
+              </div>
+            </div>
+
+            {topicError && (
+              <div className="rounded border border-red-200 bg-red-50 p-2.5 text-xs text-red-700 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                <span>{topicError}</span>
+              </div>
+            )}
+
+            {/* Topic Form */}
+            <form onSubmit={handleIngestTopic} className="space-y-3.5 text-xs">
+              <div>
+                <label className="font-mono-provenance text-[11px] font-bold text-[var(--ink-primary)] block mb-1">
+                  1. What Topic Do You Want to Study? <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. How Solar Panels Work, or Photosynthesis in Plants"
+                  value={topicForm.topic}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setTopicForm((prev) => ({
+                      ...prev,
+                      topic: val,
+                      title: prev.title || val,
+                    }));
+                  }}
+                  className="w-full rounded border border-[var(--border-paper)] px-3 py-2 focus:border-[var(--accent-sage)] focus:outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="sm:col-span-2">
+                  <label className="font-mono-provenance text-[11px] font-bold text-[var(--ink-primary)] block mb-1">
+                    2. Title of Paper or Article <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. A Beginner Guide to Solar Energy"
+                    value={topicForm.title}
+                    onChange={(e) => setTopicForm({ ...topicForm, title: e.target.value })}
+                    className="w-full rounded border border-[var(--border-paper)] px-3 py-2 focus:border-[var(--accent-sage)] focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="font-mono-provenance text-[11px] font-bold text-[var(--ink-primary)] block mb-1">
+                    Year
+                  </label>
+                  <input
+                    type="number"
+                    placeholder="2025"
+                    value={topicForm.publication_year}
+                    onChange={(e) =>
+                      setTopicForm({ ...topicForm, publication_year: e.target.value })
+                    }
+                    className="w-full rounded border border-[var(--border-paper)] px-3 py-2 focus:border-[var(--accent-sage)] focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="font-mono-provenance text-[11px] font-bold text-[var(--ink-primary)] block mb-1">
+                  3. Author Name(s) (Optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Jane Doe, Science Class Group"
+                  value={topicForm.authors}
+                  onChange={(e) => setTopicForm({ ...topicForm, authors: e.target.value })}
+                  className="w-full rounded border border-[var(--border-paper)] px-3 py-2 focus:border-[var(--accent-sage)] focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="font-mono-provenance text-[11px] font-bold text-[var(--ink-primary)]">
+                    4. Paste Article Text (Or leave blank and we will create a 5-page study guide on your topic!)
+                  </label>
+                </div>
+                <textarea
+                  rows={6}
+                  placeholder={`Paste your article or notes here... (Tip: Put --- on a new line to separate Page 1, Page 2, Page 3)
+
+Or leave this box empty and we will automatically build a structured 5-page study paper about your topic!`}
+                  value={topicForm.content}
+                  onChange={(e) => setTopicForm({ ...topicForm, content: e.target.value })}
+                  className="w-full rounded border border-[var(--border-paper)] p-3 font-mono text-[11px] leading-relaxed focus:border-[var(--accent-sage)] focus:outline-none"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-[var(--border-paper)]">
+                <button
+                  type="button"
+                  onClick={() => setShowTopicModal(false)}
+                  className="rounded-lg border border-[var(--border-paper)] px-4 py-2 text-xs font-semibold text-[var(--ink-secondary)] hover:bg-[var(--surface-subtle)] cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={topicSubmitting || !topicForm.topic.trim() || !topicForm.title.trim()}
+                  className="rounded-lg border border-[var(--accent-sage-dark)] bg-[var(--accent-sage-dark)] px-5 py-2 text-xs font-semibold text-white transition hover:bg-[var(--accent-sage)] disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
+                >
+                  {topicSubmitting ? (
+                    <>
+                      <Sparkles className="h-3.5 w-3.5 animate-spin" />
+                      <span>Adding &amp; Creating Pages...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="h-3.5 w-3.5" />
+                      <span>Add to Study Room &amp; Start Reading</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

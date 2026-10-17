@@ -7,13 +7,13 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const projectId = searchParams.get("projectId") || "proj_pedagogy_ai";
 
+    const papers = store.getPapers(projectId);
     const existing = store.getCanvas(projectId);
-    if (existing) {
+    const existingPaperNodes = existing?.nodes.filter((n) => n.type === "paper") || [];
+
+    if (existing && existingPaperNodes.length >= papers.length) {
       return NextResponse.json({ canvas: existing });
     }
-
-    // Default seed canvas nodes & edges for the project
-    const papers = store.getPapers(projectId);
     const initialNodes = [
       {
         id: "node_rq",

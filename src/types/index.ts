@@ -93,6 +93,8 @@ export interface ChatMessage {
   citations?: Citation[];
   interpretation?: string;
   uncertainty?: string;
+  thinking?: string;
+  modelUsed?: string;
   created_at: string;
 }
 

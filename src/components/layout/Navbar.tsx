@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BookOpen, Compass, Layers, ShieldCheck, ArrowRight, User } from "lucide-react";
+import { BookOpen, Compass, Layers, Settings, ArrowRight, User } from "lucide-react";
 
 export function Navbar() {
   const pathname = usePathname();
@@ -22,42 +22,36 @@ export function Navbar() {
                 SOURCEWISE
               </span>
               <span className="font-mono-provenance text-[9px] uppercase tracking-widest text-[var(--ink-muted)]">
-                Academic AI Workspace
+                Smart Paper Reader & AI Helper
               </span>
             </div>
           </Link>
         </div>
 
-        {/* Center Navigation Links (for marketing / general) */}
+        {/* Center Navigation Links */}
         {!isWorkspace ? (
           <nav className="hidden md:flex items-center gap-8 text-sm text-[var(--ink-secondary)]">
             <Link
-              href="#evidence-first"
-              className="transition-colors hover:text-[var(--accent-sage-dark)]"
-            >
-              Evidence Grounding
-            </Link>
-            <Link
               href="#signature-reader"
-              className="transition-colors hover:text-[var(--accent-sage-dark)]"
+              className="transition-colors hover:text-[var(--accent-sage-dark)] font-medium"
             >
-              PDF Reader
+              Try Interactive Demo
             </Link>
             <Link
-              href="#research-canvas"
-              className="transition-colors hover:text-[var(--accent-sage-dark)]"
+              href="#how-it-works"
+              className="transition-colors hover:text-[var(--accent-sage-dark)] font-medium"
             >
-              Research Canvas
+              How It Works (4 Steps)
             </Link>
             <Link
-              href="#gap-exploration"
-              className="transition-colors hover:text-[var(--accent-sage-dark)]"
+              href="#evidence-first"
+              className="transition-colors hover:text-[var(--accent-sage-dark)] font-medium"
             >
-              Gap Analysis
+              Why Real Page Proof Matters
             </Link>
           </nav>
         ) : (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2">
             <Link
               href="/workspace"
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${
@@ -67,7 +61,7 @@ export function Navbar() {
               }`}
             >
               <Compass className="h-3.5 w-3.5 text-[var(--accent-sage)]" />
-              Research Desk
+              <span>1. All Projects</span>
             </Link>
             <Link
               href="/workspace/projects/proj_pedagogy_ai"
@@ -78,7 +72,7 @@ export function Navbar() {
               }`}
             >
               <Layers className="h-3.5 w-3.5 text-[var(--accent-sage)]" />
-              Active Project
+              <span>2. Study Room (Reader & AI)</span>
             </Link>
             <Link
               href="/workspace/settings"
@@ -88,8 +82,8 @@ export function Navbar() {
                   : "text-[var(--ink-secondary)] hover:bg-[var(--surface-subtle)]"
               }`}
             >
-              <ShieldCheck className="h-3.5 w-3.5 text-[var(--accent-sage)]" />
-              Provenance Settings
+              <Settings className="h-3.5 w-3.5 text-[var(--accent-sage)]" />
+              <span>3. Settings & API Key</span>
             </Link>
           </div>
         )}
@@ -105,10 +99,10 @@ export function Navbar() {
                 Sign In
               </Link>
               <Link
-                href="/workspace"
-                className="group flex items-center gap-1.5 rounded border border-[var(--accent-sage-dark)] bg-[var(--accent-sage-dark)] px-3.5 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-[var(--accent-sage)]"
+                href="/workspace/projects/proj_pedagogy_ai"
+                className="group flex items-center gap-1.5 rounded border border-[var(--accent-sage-dark)] bg-[var(--accent-sage-dark)] px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-[var(--accent-sage)]"
               >
-                <span>Enter Research Desk</span>
+                <span>Open App Now</span>
                 <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
               </Link>
             </>
@@ -118,7 +112,7 @@ export function Navbar() {
                 <User className="h-3.5 w-3.5 text-[var(--ink-secondary)]" />
               </div>
               <span className="hidden text-xs text-[var(--ink-muted)] sm:inline">
-                Elena Rostova
+                Student Mode
               </span>
             </div>
           )}
@@ -127,3 +121,4 @@ export function Navbar() {
     </header>
   );
 }
+

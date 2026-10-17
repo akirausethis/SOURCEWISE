@@ -7,6 +7,10 @@ import {
   FileSearch,
   ArrowRight,
   ShieldCheck,
+  Upload,
+  MessageSquare,
+  Columns,
+  Sparkles,
 } from "lucide-react";
 
 export default function LandingPage() {
@@ -14,183 +18,182 @@ export default function LandingPage() {
     <div className="min-h-screen bg-[var(--surface-paper)] text-[var(--ink-primary)]">
       <Navbar />
 
-      {/* Hero Section: Editorial & Rigorous Academic Tone */}
-      <section className="relative overflow-hidden pt-16 pb-20 md:pt-24 md:pb-28 border-b border-[var(--border-paper)]">
+      {/* Hero Section: Crystal-Clear & Welcoming */}
+      <section className="relative overflow-hidden pt-12 pb-16 md:pt-20 md:pb-24 border-b border-[var(--border-paper)]">
         <div className="mx-auto max-w-5xl px-4 text-center sm:px-6 lg:px-8">
-          {/* Provenance Pill */}
-          <div className="inline-flex items-center gap-2 rounded-full border border-[var(--accent-sage-border)] bg-[var(--accent-sage-light)] px-3.5 py-1 text-xs font-medium text-[var(--accent-sage-dark)] mb-6">
+          {/* Simple Badge */}
+          <div className="inline-flex items-center gap-2 rounded-full border border-[var(--accent-sage-border)] bg-[var(--accent-sage-light)] px-3.5 py-1 text-xs font-semibold text-[var(--accent-sage-dark)] mb-6">
             <ShieldCheck className="h-4 w-4" />
-            <span>Trace Every Claim • Physical Page Provenance</span>
+            <span>Upload Any Paper or Topic • Every AI Answer Shows Exact Page Proof</span>
           </div>
 
-          {/* Main Editorial Headline */}
+          {/* Main Headline */}
           <h1 className="font-editorial text-4xl sm:text-5xl md:text-6xl font-bold tracking-tight text-[var(--ink-primary)] leading-[1.15]">
-            Where academic literature meets{" "}
+            Read papers faster, ask questions, and{" "}
             <span className="italic font-normal text-[var(--accent-sage-dark)]">
-              verifiable intelligence.
+              see the exact page every answer comes from.
             </span>
           </h1>
 
-          {/* Supporting Copy */}
+          {/* Supporting Copy in Plain English */}
           <p className="mx-auto mt-6 max-w-2xl text-base sm:text-lg text-[var(--ink-secondary)] leading-relaxed font-sans-ui">
-            SOURCEWISE is an evidence-grounded AI research workspace for university students, thesis
-            writers, and literature reviewers. Read papers, extract citations, synthesize comparative
-            matrices, and explore real research gaps without hallucinations.
+            Normal AI chatbots sometimes make things up. <strong>SOURCEWISE</strong> is different: you upload your PDF file (or type any topic), ask questions in plain English, and click any answer to jump straight to the highlighted sentence in your paper!
           </p>
 
           {/* Primary & Secondary Call to Actions */}
           <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-4">
             <Link
-              href="/workspace"
-              className="flex w-full sm:w-auto items-center justify-center gap-2 rounded border border-[var(--accent-sage-dark)] bg-[var(--accent-sage-dark)] px-6 py-3 text-sm font-semibold text-white shadow transition hover:bg-[var(--accent-sage)]"
+              href="/workspace/projects/proj_pedagogy_ai"
+              className="flex w-full sm:w-auto items-center justify-center gap-2 rounded-lg border border-[var(--accent-sage-dark)] bg-[var(--accent-sage-dark)] px-7 py-3.5 text-sm font-semibold text-white shadow-md transition hover:bg-[var(--accent-sage)]"
             >
-              <span>Open Research Desk</span>
+              <span>Start Using Sourcewise Now (Free Demo)</span>
               <ArrowRight className="h-4 w-4" />
             </Link>
             <Link
-              href="/workspace/projects/proj_pedagogy_ai"
-              className="flex w-full sm:w-auto items-center justify-center gap-2 rounded border border-[var(--border-paper-strong)] bg-white px-6 py-3 text-sm font-medium text-[var(--ink-primary)] shadow-sm hover:bg-[var(--surface-subtle)]"
+              href="/workspace"
+              className="flex w-full sm:w-auto items-center justify-center gap-2 rounded-lg border border-[var(--border-paper-strong)] bg-white px-6 py-3.5 text-sm font-semibold text-[var(--ink-primary)] shadow-xs hover:bg-[var(--surface-subtle)]"
             >
               <FileSearch className="h-4 w-4 text-[var(--accent-amber)]" />
-              <span>Explore Sample Thesis Project</span>
+              <span>View All Sample Projects</span>
             </Link>
           </div>
 
-          {/* Trust Guarantees */}
-          <div className="mt-10 flex flex-wrap items-center justify-center gap-6 text-xs text-[var(--ink-muted)]">
+          {/* Simple 3-Point Promise */}
+          <div className="mt-8 flex flex-wrap items-center justify-center gap-6 text-xs text-[var(--ink-secondary)] font-medium">
             <span className="flex items-center gap-1.5">
-              <CheckCircle className="h-3.5 w-3.5 text-[var(--accent-sage)]" />
-              Zero fabricated papers or DOIs
+              <CheckCircle className="h-4 w-4 text-[var(--accent-sage)]" />
+              1. Upload your own PDF or topic
             </span>
             <span className="flex items-center gap-1.5">
-              <CheckCircle className="h-3.5 w-3.5 text-[var(--accent-sage)]" />
-              Verbatim passage coordinate mapping
+              <CheckCircle className="h-4 w-4 text-[var(--accent-sage)]" />
+              2. Ask the AI anything in simple words
             </span>
             <span className="flex items-center gap-1.5">
-              <CheckCircle className="h-3.5 w-3.5 text-[var(--accent-sage)]" />
-              Private client & server document storage
+              <CheckCircle className="h-4 w-4 text-[var(--accent-sage)]" />
+              3. Click to highlight the exact page &amp; quote
             </span>
           </div>
         </div>
 
-        {/* Live Interactive Product Composition Demo */}
+        {/* Live Interactive Product Preview */}
         <div id="signature-reader" className="mt-14 px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-6">
-            <span className="font-mono-provenance text-xs uppercase tracking-widest text-[var(--accent-sage)] font-semibold">
-              Interactive Preview
+            <span className="font-mono-provenance text-xs uppercase tracking-widest text-[var(--accent-sage-dark)] font-bold">
+              👇 Interactive Preview — Try Clicking the Yellow Buttons Below!
             </span>
-            <h2 className="font-editorial text-2xl font-bold mt-1 text-[var(--ink-primary)]">
-              The Signature Evidence Reader
+            <h2 className="font-editorial text-2xl sm:text-3xl font-bold mt-1 text-[var(--ink-primary)]">
+              See How the Paper Reader &amp; AI Helper Work Together
             </h2>
-            <p className="text-xs text-[var(--ink-muted)] mt-1 max-w-lg mx-auto">
-              Click the citation buttons on the right to jump directly to physical pages and verify
-              the highlighted source passages.
+            <p className="text-xs sm:text-sm text-[var(--ink-secondary)] mt-1 max-w-xl mx-auto">
+              On the left is your paper. On the right is the AI Helper. Click the yellow <strong>[1]</strong>, <strong>[2]</strong>, or <strong>[3]</strong> buttons to watch it jump to the exact page and highlight the proof!
             </p>
           </div>
           <InteractiveReaderDemo />
         </div>
       </section>
 
-      {/* The 4-Stage Research Workflow */}
-      <section className="py-20 border-b border-[var(--border-paper)] bg-[var(--surface-subtle)]">
+      {/* How It Works in 4 Simple Steps */}
+      <section id="how-it-works" className="py-20 border-b border-[var(--border-paper)] bg-[var(--surface-subtle)]">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
           <div className="max-w-2xl">
-            <span className="font-mono-provenance text-xs uppercase tracking-widest text-[var(--accent-sage)] font-semibold">
-              Research Process
+            <span className="font-mono-provenance text-xs uppercase tracking-widest text-[var(--accent-sage-dark)] font-bold">
+              Super Simple Guide
             </span>
             <h2 className="font-editorial text-3xl font-bold mt-2 text-[var(--ink-primary)]">
-              From disparate PDFs to defensible thesis arguments.
+              How to Use Sourcewise in 4 Easy Steps
             </h2>
             <p className="text-sm text-[var(--ink-secondary)] mt-3 leading-relaxed">
-              SOURCEWISE mirrors the natural cognitive workflow of academic investigation,
-              amplifying critical thinking rather than replacing it with unverified claims.
+              Whether you are doing school homework, writing a college essay, or researching a big topic, here is all you need to do:
             </p>
           </div>
 
-          <div className="mt-12 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <div className="mt-10 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
             {/* Step 1 */}
-            <div className="rounded-lg border border-[var(--border-paper)] bg-white p-6 shadow-sm">
-              <div className="flex h-8 w-8 items-center justify-center rounded bg-[var(--surface-subtle)] text-xs font-mono-provenance font-bold text-[var(--ink-primary)] mb-4">
-                01
+            <div className="rounded-xl border border-[var(--border-paper)] bg-white p-6 shadow-xs">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--accent-sage-light)] text-xs font-mono-provenance font-bold text-[var(--accent-sage-dark)] mb-4">
+                <Upload className="h-4 w-4" />
               </div>
-              <h3 className="font-editorial text-base font-bold text-[var(--ink-primary)]">
-                Collect & Ingest
+              <div className="font-mono-provenance text-[11px] font-bold text-[var(--accent-sage-dark)] uppercase">
+                Step 1
+              </div>
+              <h3 className="font-editorial text-lg font-bold text-[var(--ink-primary)] mt-0.5">
+                Add a Paper or Topic
               </h3>
               <p className="text-xs text-[var(--ink-secondary)] mt-2 leading-relaxed">
-                Upload private PDFs. Automatic parsing extracts bibliographic metadata, physical
-                page coordinates, and sentence-level chunks without public exposure.
+                Upload a PDF/text file from your computer, or simply type any topic you want to learn about. We break it into neat, readable pages.
               </p>
             </div>
 
             {/* Step 2 */}
-            <div className="rounded-lg border border-[var(--border-paper)] bg-white p-6 shadow-sm">
-              <div className="flex h-8 w-8 items-center justify-center rounded bg-[var(--surface-subtle)] text-xs font-mono-provenance font-bold text-[var(--ink-primary)] mb-4">
-                02
+            <div className="rounded-xl border border-[var(--border-paper)] bg-white p-6 shadow-xs">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-100 text-xs font-mono-provenance font-bold text-amber-900 mb-4">
+                <MessageSquare className="h-4 w-4" />
               </div>
-              <h3 className="font-editorial text-base font-bold text-[var(--ink-primary)]">
-                Trace Evidence
+              <div className="font-mono-provenance text-[11px] font-bold text-[var(--accent-amber)] uppercase">
+                Step 2
+              </div>
+              <h3 className="font-editorial text-lg font-bold text-[var(--ink-primary)] mt-0.5">
+                Ask the AI &amp; Check Proof
               </h3>
               <p className="text-xs text-[var(--ink-secondary)] mt-2 leading-relaxed">
-                Ask targeted research questions. Every AI response resolves to exact physical page
-                passages. Clicking any citation opens the document and scrolls to the quote.
+                Ask the AI any question. Every answer includes yellow proof buttons. Click a button to jump straight to that page and see the highlighted sentence!
               </p>
             </div>
 
             {/* Step 3 */}
-            <div className="rounded-lg border border-[var(--border-paper)] bg-white p-6 shadow-sm">
-              <div className="flex h-8 w-8 items-center justify-center rounded bg-[var(--surface-subtle)] text-xs font-mono-provenance font-bold text-[var(--ink-primary)] mb-4">
-                03
+            <div className="rounded-xl border border-[var(--border-paper)] bg-white p-6 shadow-xs">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--accent-sage-light)] text-xs font-mono-provenance font-bold text-[var(--accent-sage-dark)] mb-4">
+                <Columns className="h-4 w-4" />
               </div>
-              <h3 className="font-editorial text-base font-bold text-[var(--ink-primary)]">
-                Compare Literature
+              <div className="font-mono-provenance text-[11px] font-bold text-[var(--accent-sage-dark)] uppercase">
+                Step 3
+              </div>
+              <h3 className="font-editorial text-lg font-bold text-[var(--ink-primary)] mt-0.5">
+                Compare Papers in a Table
               </h3>
               <p className="text-xs text-[var(--ink-secondary)] mt-2 leading-relaxed">
-                Generate structured cross-paper matrices across objectives, methodologies, datasets,
-                findings, and limitations. Missing values are explicitly flagged.
+                Have more than one paper? Click the <strong>Compare Table</strong> tab to see their main goals, methods, results, and weaknesses side by side.
               </p>
             </div>
 
             {/* Step 4 */}
-            <div className="rounded-lg border border-[var(--border-paper)] bg-white p-6 shadow-sm">
-              <div className="flex h-8 w-8 items-center justify-center rounded bg-[var(--surface-subtle)] text-xs font-mono-provenance font-bold text-[var(--ink-primary)] mb-4">
-                04
+            <div className="rounded-xl border border-[var(--border-paper)] bg-white p-6 shadow-xs">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-100 text-xs font-mono-provenance font-bold text-amber-900 mb-4">
+                <Sparkles className="h-4 w-4" />
               </div>
-              <h3 className="font-editorial text-base font-bold text-[var(--ink-primary)]">
-                Explore Research Gaps
+              <div className="font-mono-provenance text-[11px] font-bold text-[var(--accent-amber)] uppercase">
+                Step 4
+              </div>
+              <h3 className="font-editorial text-lg font-bold text-[var(--ink-primary)] mt-0.5">
+                Find New Project Ideas
               </h3>
               <p className="text-xs text-[var(--ink-secondary)] mt-2 leading-relaxed">
-                Synthesize stated limitations into candidate research questions with explicit
-                uncertainty ratings and concrete external validation plans.
+                Click the <strong>New Ideas (Gaps)</strong> tab to see what problems the authors haven&apos;t solved yet—giving you great ideas for your own project!
               </p>
             </div>
           </div>
         </div>
       </section>
 
-      {/* Grounded AI Transparency Philosophy Section */}
+      {/* Why Real Page Proof Matters Section */}
       <section id="evidence-first" className="py-20 border-b border-[var(--border-paper)]">
         <div className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8">
           <div className="rounded-xl border border-[var(--border-paper-strong)] bg-white p-8 sm:p-12 shadow-sm">
-            <div className="flex items-center gap-2 text-[var(--accent-sage)] mb-3">
+            <div className="flex items-center gap-2 text-[var(--accent-sage-dark)] mb-3">
               <ShieldCheck className="h-5 w-5" />
-              <span className="font-mono-provenance text-xs uppercase tracking-widest font-semibold">
-                Our Non-Negotiable Contract
+              <span className="font-mono-provenance text-xs uppercase tracking-widest font-bold">
+                Why Students &amp; Researchers Love Sourcewise
               </span>
             </div>
             <h2 className="font-editorial text-2xl sm:text-3xl font-bold text-[var(--ink-primary)]">
-              AI should assist verification, never fabricate consensus.
+              An AI helper that shows its homework—and never makes up fake quotes.
             </h2>
-            <div className="mt-6 space-y-4 text-sm text-[var(--ink-secondary)] leading-relaxed">
+            <div className="mt-5 space-y-4 text-sm text-[var(--ink-secondary)] leading-relaxed">
               <p>
-                In academic literature reviews, false confidence is dangerous. A single hallucinated
-                citation or misattributed statistical claim can invalidate a thesis defense or
-                derail months of research.
+                When you use a normal chatbot for school or research, it can accidentally invent fake facts or fake book titles. That can ruin your homework or essay!
               </p>
               <p>
-                SOURCEWISE enforces a strict architectural rule: every candidate citation generated
-                by the model is verified against the actual text extracted from that paper’s physical
-                pages. If the quote cannot be verified or the page number does not exist, the
-                citation is flagged and rejected.
+                <strong>SOURCEWISE</strong> solves this with a simple rule: every answer must point to a real page and a real sentence inside your uploaded papers. You can even open the AI&apos;s <strong>&ldquo;Thinking Steps&rdquo;</strong> box to see how it found the answer!
               </p>
             </div>
 
@@ -199,21 +202,30 @@ export default function LandingPage() {
                 <CheckCircle className="h-4 w-4 text-[var(--accent-sage)] shrink-0 mt-0.5" />
                 <div>
                   <strong className="text-[var(--ink-primary)] block">
-                    Distinguishable Claims
+                    See Exact Quotes Highlighted
                   </strong>
-                  Direct quotes, AI interpretations, and researcher notes are distinctly styled.
+                  Click any citation to jump to the exact page and highlight the words in yellow.
                 </div>
               </div>
               <div className="flex items-start gap-2.5">
                 <CheckCircle className="h-4 w-4 text-[var(--accent-sage)] shrink-0 mt-0.5" />
                 <div>
                   <strong className="text-[var(--ink-primary)] block">
-                    Explicit Uncertainty
+                    Honest When It Doesn&apos;t Know
                   </strong>
-                  When literature does not address an inquiry, SOURCEWISE explicitly communicates the
-                  limitation.
+                  If your papers don&apos;t mention something, the AI honestly tells you instead of guessing.
                 </div>
               </div>
+            </div>
+
+            <div className="mt-8 pt-4">
+              <Link
+                href="/workspace/projects/proj_pedagogy_ai"
+                className="inline-flex items-center gap-2 rounded-lg border border-[var(--accent-sage-dark)] bg-[var(--accent-sage-dark)] px-6 py-3 text-xs font-semibold text-white shadow-sm transition hover:bg-[var(--accent-sage)]"
+              >
+                <span>Open the Study Room &amp; Try It Yourself</span>
+                <ArrowRight className="h-4 w-4" />
+              </Link>
             </div>
           </div>
         </div>
@@ -226,12 +238,15 @@ export default function LandingPage() {
             <BookOpen className="h-4 w-4 text-[var(--accent-sage)]" />
             <span>SOURCEWISE</span>
           </div>
-          <div>Built for students, thesis candidates, and researchers. Non-generic, evidence-grounded engineering.</div>
+          <div>Easy-to-use AI paper reader and study helper with 100% real page proof.</div>
           <div className="flex items-center gap-4">
-            <Link href="/workspace" className="hover:text-[var(--ink-primary)]">
-              Workspace
+            <Link href="/workspace" className="hover:text-[var(--ink-primary)] font-medium">
+              All Projects
             </Link>
-            <Link href="/workspace/settings" className="hover:text-[var(--ink-primary)]">
+            <Link href="/workspace/projects/proj_pedagogy_ai" className="hover:text-[var(--ink-primary)] font-medium">
+              Study Room
+            </Link>
+            <Link href="/workspace/settings" className="hover:text-[var(--ink-primary)] font-medium">
               Settings
             </Link>
           </div>
@@ -240,3 +255,4 @@ export default function LandingPage() {
     </div>
   );
 }
+

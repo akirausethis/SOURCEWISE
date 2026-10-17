@@ -13,6 +13,9 @@ import {
   Search,
   X,
   Compass,
+  Upload,
+  MessageSquare,
+  Columns,
 } from "lucide-react";
 import { ResearchProject, AcademicPaper, ResearchNote } from "@/types";
 
@@ -28,18 +31,42 @@ export default function WorkspaceDashboard() {
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
-    // Load projects
+    // Load projects from API + merge any custom projects from localStorage
     fetch("/api/projects")
       .then((res) => res.json())
       .then((data) => {
-        if (data.projects) setProjects(data.projects);
+        const apiProjects: ResearchProject[] = data.projects || [];
+        let customProjects: ResearchProject[] = [];
+        try {
+          const saved = localStorage.getItem("sourcewise_custom_projects");
+          if (saved) customProjects = JSON.parse(saved);
+        } catch {
+          // ignore storage errors
+        }
+        const mergedMap = new Map<string, ResearchProject>();
+        for (const p of [...customProjects, ...apiProjects]) {
+          if (!mergedMap.has(p.id)) mergedMap.set(p.id, p);
+        }
+        setProjects(Array.from(mergedMap.values()));
       });
 
     // Load papers
     fetch("/api/papers")
       .then((res) => res.json())
       .then((data) => {
-        if (data.papers) setPapers(data.papers);
+        const apiPapers: AcademicPaper[] = data.papers || [];
+        let customPapers: AcademicPaper[] = [];
+        try {
+          const saved = localStorage.getItem("sourcewise_custom_papers");
+          if (saved) customPapers = JSON.parse(saved);
+        } catch {
+          // ignore
+        }
+        const mergedMap = new Map<string, AcademicPaper>();
+        for (const p of [...customPapers, ...apiPapers]) {
+          if (!mergedMap.has(p.id)) mergedMap.set(p.id, p);
+        }
+        setPapers(Array.from(mergedMap.values()));
       });
 
     // Load notes
@@ -67,7 +94,21 @@ export default function WorkspaceDashboard() {
       });
       const data = await res.json();
       if (data.project) {
-        setProjects((prev) => [data.project, ...prev]);
+        setProjects((prev) => {
+          const updated = [data.project, ...prev];
+          try {
+            const existingCustom = JSON.parse(
+              localStorage.getItem("sourcewise_custom_projects") || "[]"
+            );
+            localStorage.setItem(
+              "sourcewise_custom_projects",
+              JSON.stringify([data.project, ...existingCustom])
+            );
+          } catch {
+            // ignore
+          }
+          return updated;
+        });
         setShowNewProjectModal(false);
         setNewTitle("");
         setNewQuestion("");
@@ -90,67 +131,103 @@ export default function WorkspaceDashboard() {
     <div className="min-h-screen bg-[var(--surface-paper)] text-[var(--ink-primary)]">
       <Navbar />
 
-      <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8 sm:py-12">
-        {/* Scholar Header */}
+      <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8 sm:py-10">
+        {/* Friendly Header */}
         <div className="flex flex-col md:flex-row md:items-end justify-between border-b border-[var(--border-paper)] pb-6 gap-4">
           <div>
-            <div className="flex items-center gap-2 text-xs font-mono-provenance text-[var(--accent-sage-dark)] mb-1">
+            <div className="flex items-center gap-2 text-xs font-mono-provenance text-[var(--accent-sage-dark)] font-bold mb-1">
               <Compass className="h-4 w-4 text-[var(--accent-sage)]" />
-              <span>Personal Research Desk</span>
+              <span>STEP 1: PICK A PROJECT FOLDER</span>
             </div>
             <h1 className="font-editorial text-3xl sm:text-4xl font-bold text-[var(--ink-primary)]">
-              Welcome back, Elena.
+              My Study &amp; Research Projects
             </h1>
-            <p className="mt-1 text-xs text-[var(--ink-muted)]">
-              Oxford Institute of Cognitive Sciences • 2 active research projects • 5 verified papers
+            <p className="mt-1 text-sm text-[var(--ink-secondary)]">
+              Open a project below to upload your own PDFs/topics, chat with the AI helper, and see exact page proof.
             </p>
           </div>
 
           <button
             onClick={() => setShowNewProjectModal(true)}
-            className="inline-flex items-center gap-2 rounded border border-[var(--accent-sage-dark)] bg-[var(--accent-sage-dark)] px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-[var(--accent-sage)] self-start md:self-auto"
+            className="inline-flex items-center gap-2 rounded-lg border border-[var(--accent-sage-dark)] bg-[var(--accent-sage-dark)] px-4 py-2.5 text-xs font-semibold text-white shadow-sm transition hover:bg-[var(--accent-sage)] self-start md:self-auto cursor-pointer"
           >
             <Plus className="h-4 w-4" />
-            <span>New Research Project</span>
+            <span>+ Create New Project Folder</span>
           </button>
         </div>
 
-        {/* Continue Reading Desk: Primary Focus Object */}
-        <section className="mt-8 rounded-xl border border-[var(--border-paper-strong)] bg-white p-6 shadow-sm">
+        {/* 3-Step Visual Guide Banner */}
+        <section className="mt-6 rounded-xl border border-[var(--accent-sage-border)] bg-[var(--accent-sage-light)]/50 p-4 sm:p-5">
+          <div className="text-xs font-mono-provenance font-bold uppercase tracking-wider text-[var(--accent-sage-dark)] mb-3">
+            ✨ How Sourcewise Works (In 3 Simple Steps):
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+            <div className="flex items-start gap-3 rounded-lg bg-white p-3.5 border border-[var(--border-paper)]">
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent-sage-dark)] text-white font-bold">
+                1
+              </div>
+              <div>
+                <strong className="text-[var(--ink-primary)] block text-sm">Open a Project</strong>
+                <span className="text-[var(--ink-secondary)]">
+                  Click any project below (or create a new one for your homework or essay).
+                </span>
+              </div>
+            </div>
+            <div className="flex items-start gap-3 rounded-lg bg-white p-3.5 border border-[var(--border-paper)]">
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent-sage-dark)] text-white font-bold">
+                2
+              </div>
+              <div>
+                <strong className="text-[var(--ink-primary)] block text-sm">Upload PDF or Topic</strong>
+                <span className="text-[var(--ink-secondary)]">
+                  Upload your own PDF/text file, or type any topic you want the AI to read.
+                </span>
+              </div>
+            </div>
+            <div className="flex items-start gap-3 rounded-lg bg-white p-3.5 border border-[var(--border-paper)]">
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent-sage-dark)] text-white font-bold">
+                3
+              </div>
+              <div>
+                <strong className="text-[var(--ink-primary)] block text-sm">Ask AI &amp; See Page Proof</strong>
+                <span className="text-[var(--ink-secondary)]">
+                  Ask questions, click yellow proof boxes to highlight the exact sentence, and compare papers!
+                </span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Quick Jump Card: Most Popular Demo Project */}
+        <section className="mt-6 rounded-xl border-2 border-[var(--accent-sage-border)] bg-white p-6 shadow-sm">
           <div className="flex items-center justify-between border-b border-[var(--border-paper)] pb-3">
             <div className="flex items-center gap-2">
               <Clock className="h-4 w-4 text-[var(--accent-amber)]" />
               <h2 className="font-editorial text-base font-bold text-[var(--ink-primary)]">
-                Continue Reading
+                🚀 Ready to Try? Start Here!
               </h2>
             </div>
-            <span className="font-mono-provenance text-xs text-[var(--ink-muted)]">
-              Last accessed today at 14:30
+            <span className="font-mono-provenance text-xs text-emerald-700 font-semibold">
+              Pre-loaded with 3 Famous AI Papers + Ready for Your Uploads
             </span>
           </div>
 
           <div className="mt-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
-              <span className="inline-block rounded bg-[var(--surface-subtle)] px-2 py-0.5 font-mono-provenance text-[11px] font-medium text-[var(--ink-secondary)] mb-1.5">
-                NeurIPS 2017 • Physical Page 3
-              </span>
-              <h3 className="font-editorial text-lg font-bold text-[var(--ink-primary)]">
-                Attention Is All You Need
+              <h3 className="font-editorial text-xl font-bold text-[var(--ink-primary)]">
+                How AI &amp; Transformers Work (Sample Study Room)
               </h3>
-              <p className="text-xs text-[var(--ink-secondary)] mt-0.5">
-                Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit
-              </p>
-              <p className="text-xs text-[var(--ink-muted)] mt-2 italic">
-                “An attention function can be described as mapping a query and a set of key-value pairs to an output...”
+              <p className="text-xs text-[var(--ink-secondary)] mt-1 max-w-2xl">
+                Jump straight into the Study Room! You can test the pre-loaded papers (like <em>Attention Is All You Need</em>) OR click <strong>&ldquo;+ Upload PDF&rdquo;</strong> / <strong>&ldquo;+ Add Topic&rdquo;</strong> at the top to use your own data right away.
               </p>
             </div>
 
             <Link
               href="/workspace/projects/proj_pedagogy_ai"
-              className="inline-flex items-center gap-2 rounded border border-[var(--accent-sage-border)] bg-[var(--accent-sage-light)] px-4 py-2 text-xs font-semibold text-[var(--accent-sage-dark)] transition hover:bg-emerald-100 self-start md:self-auto"
+              className="inline-flex items-center gap-2 rounded-lg border border-[var(--accent-sage-dark)] bg-[var(--accent-sage-dark)] px-5 py-3 text-xs font-semibold text-white shadow-sm transition hover:bg-[var(--accent-sage)] self-start md:self-auto shrink-0"
             >
-              <span>Resume Reading in Split-Pane</span>
-              <ArrowRight className="h-3.5 w-3.5" />
+              <span>Open Study Room Now</span>
+              <ArrowRight className="h-4 w-4" />
             </Link>
           </div>
         </section>
@@ -163,14 +240,14 @@ export default function WorkspaceDashboard() {
               <div className="flex items-center gap-2">
                 <Layers className="h-4 w-4 text-[var(--accent-sage)]" />
                 <h2 className="font-editorial text-xl font-bold text-[var(--ink-primary)]">
-                  Active Projects
+                  Your Project Folders ({filteredProjects.length})
                 </h2>
               </div>
               <div className="relative w-48 sm:w-64">
                 <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-[var(--ink-muted)]" />
                 <input
                   type="text"
-                  placeholder="Filter projects..."
+                  placeholder="Search projects..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="w-full rounded border border-[var(--border-paper)] bg-white pl-8 pr-3 py-1.5 text-xs text-[var(--ink-primary)] focus:border-[var(--accent-sage)] focus:outline-none"
@@ -182,17 +259,17 @@ export default function WorkspaceDashboard() {
               {filteredProjects.map((project) => (
                 <div
                   key={project.id}
-                  className="group rounded-xl border border-[var(--border-paper)] bg-white p-6 shadow-sm transition hover:border-[var(--accent-sage-border)] hover:shadow"
+                  className="group rounded-xl border border-[var(--border-paper)] bg-white p-6 shadow-xs transition hover:border-[var(--accent-sage-border)] hover:shadow-md"
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-1.5">
-                        <span className="font-mono-provenance text-[11px] text-[var(--accent-sage-dark)] uppercase font-semibold">
-                          Active Thesis Workspace
+                        <span className="font-mono-provenance text-[11px] text-[var(--accent-sage-dark)] uppercase font-bold">
+                          Project Folder
                         </span>
                         <span className="text-[var(--border-paper-strong)]">•</span>
                         <span className="font-mono-provenance text-[11px] text-[var(--ink-muted)]">
-                          {project.papers_count || 3} Papers
+                          {project.papers_count || 3} Papers Inside
                         </span>
                       </div>
                       <Link
@@ -204,7 +281,7 @@ export default function WorkspaceDashboard() {
                       {project.research_question && (
                         <p className="mt-2 text-xs text-[var(--ink-secondary)] font-sans-ui">
                           <strong className="text-[var(--ink-primary)] font-semibold">
-                            Research Question:
+                            Main Question:
                           </strong>{" "}
                           {project.research_question}
                         </p>
@@ -218,20 +295,30 @@ export default function WorkspaceDashboard() {
 
                     <Link
                       href={`/workspace/projects/${project.id}`}
-                      className="rounded p-2 text-[var(--ink-muted)] group-hover:text-[var(--accent-sage-dark)] group-hover:bg-[var(--surface-subtle)] transition"
-                      aria-label="Open project"
+                      className="rounded-lg bg-[var(--accent-sage-light)] px-3.5 py-2 text-xs font-semibold text-[var(--accent-sage-dark)] group-hover:bg-[var(--accent-sage-dark)] group-hover:text-white transition flex items-center gap-1.5 shrink-0"
                     >
-                      <ArrowRight className="h-5 w-5" />
+                      <span>Open</span>
+                      <ArrowRight className="h-3.5 w-3.5" />
                     </Link>
                   </div>
 
-                  <div className="mt-4 flex items-center justify-between border-t border-[var(--border-paper)] pt-3 text-[11px] text-[var(--ink-muted)] font-mono-provenance">
-                    <span>Last updated: {new Date(project.updated_at).toLocaleDateString()}</span>
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border-paper)] pt-3 text-[11px] text-[var(--ink-muted)]">
+                    <div className="flex items-center gap-4">
+                      <span className="flex items-center gap-1">
+                        <Upload className="h-3 w-3 text-[var(--accent-sage)]" /> Upload PDFs
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <MessageSquare className="h-3 w-3 text-[var(--accent-amber)]" /> Ask AI with Proof
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <Columns className="h-3 w-3 text-[var(--accent-sage)]" /> Compare Table
+                      </span>
+                    </div>
                     <Link
                       href={`/workspace/projects/${project.id}`}
-                      className="text-[var(--accent-sage-dark)] font-semibold hover:underline"
+                      className="text-[var(--accent-sage-dark)] font-bold hover:underline"
                     >
-                      Open Research Tabs →
+                      Open Study Room →
                     </Link>
                   </div>
                 </div>
@@ -239,21 +326,54 @@ export default function WorkspaceDashboard() {
             </div>
           </div>
 
-          {/* Right Sidebar: Recent Notes & Evidence Highlights (4 cols) */}
+          {/* Right Sidebar: Recent Notes & Papers (4 cols) */}
           <div className="lg:col-span-4 space-y-6">
-            <div className="rounded-xl border border-[var(--border-paper)] bg-white p-5 shadow-sm">
+            <div className="rounded-xl border border-[var(--border-paper)] bg-white p-5 shadow-xs">
+              <div className="flex items-center justify-between border-b border-[var(--border-paper)] pb-3 mb-4">
+                <div className="flex items-center gap-2">
+                  <BookOpen className="h-4 w-4 text-[var(--accent-sage)]" />
+                  <h3 className="font-editorial text-sm font-bold text-[var(--ink-primary)]">
+                    Papers Ready to Read ({papers.length})
+                  </h3>
+                </div>
+                <Link
+                  href="/workspace/projects/proj_pedagogy_ai"
+                  className="font-mono-provenance text-[11px] text-[var(--accent-sage-dark)] font-semibold hover:underline"
+                >
+                  + Add More
+                </Link>
+              </div>
+
+              <div className="divide-y divide-[var(--border-paper)]">
+                {papers.slice(0, 5).map((paper) => (
+                  <div key={paper.id} className="py-2.5 first:pt-0 last:pb-0">
+                    <Link
+                      href={`/workspace/projects/${paper.project_id || "proj_pedagogy_ai"}`}
+                      className="text-xs font-semibold text-[var(--ink-primary)] hover:text-[var(--accent-sage-dark)] line-clamp-1"
+                    >
+                      📄 {paper.title}
+                    </Link>
+                    <p className="text-[11px] text-[var(--ink-muted)]">
+                      {paper.authors[0] || "Author"} • {paper.publication_year || 2024} • {paper.page_count} Pages
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-[var(--border-paper)] bg-white p-5 shadow-xs">
               <div className="flex items-center justify-between border-b border-[var(--border-paper)] pb-3 mb-4">
                 <div className="flex items-center gap-2">
                   <FileText className="h-4 w-4 text-[var(--accent-sage)]" />
                   <h3 className="font-editorial text-sm font-bold text-[var(--ink-primary)]">
-                    Recent Notes
+                    Saved Study Notes
                   </h3>
                 </div>
                 <Link
                   href="/workspace/projects/proj_pedagogy_ai"
                   className="font-mono-provenance text-[11px] text-[var(--accent-sage-dark)] hover:underline"
                 >
-                  View All
+                  Open Notes
                 </Link>
               </div>
 
@@ -268,53 +388,13 @@ export default function WorkspaceDashboard() {
                         {note.title}
                       </span>
                       {note.page_reference && (
-                        <span className="font-mono-provenance text-[10px] text-[var(--accent-amber)] font-medium shrink-0">
-                          p. {note.page_reference}
+                        <span className="font-mono-provenance text-[10px] text-[var(--accent-amber)] font-bold shrink-0">
+                          Page {note.page_reference}
                         </span>
                       )}
                     </div>
                     <p className="text-[var(--ink-secondary)] text-[11px] line-clamp-2">
                       {note.content}
-                    </p>
-                    {note.tags.length > 0 && (
-                      <div className="mt-2 flex flex-wrap gap-1">
-                        {note.tags.map((tag) => (
-                          <span
-                            key={tag}
-                            className="rounded bg-white px-1.5 py-0.5 font-mono-provenance text-[9px] text-[var(--ink-muted)] border border-[var(--border-paper)]"
-                          >
-                            #{tag}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Project Documents Quick List */}
-            <div className="rounded-xl border border-[var(--border-paper)] bg-white p-5 shadow-sm">
-              <div className="flex items-center justify-between border-b border-[var(--border-paper)] pb-3 mb-3">
-                <div className="flex items-center gap-2">
-                  <BookOpen className="h-4 w-4 text-[var(--accent-sage)]" />
-                  <h3 className="font-editorial text-sm font-bold text-[var(--ink-primary)]">
-                    Collected Papers
-                  </h3>
-                </div>
-                <span className="font-mono-provenance text-xs text-[var(--ink-muted)]">
-                  {papers.length} total
-                </span>
-              </div>
-
-              <div className="divide-y divide-[var(--border-paper)]">
-                {papers.slice(0, 3).map((paper) => (
-                  <div key={paper.id} className="py-2.5 first:pt-0 last:pb-0">
-                    <h4 className="text-xs font-semibold text-[var(--ink-primary)] line-clamp-1">
-                      {paper.title}
-                    </h4>
-                    <p className="text-[11px] text-[var(--ink-muted)]">
-                      {paper.authors[0] || "Author"} • {paper.publication_year || 2024}
                     </p>
                   </div>
                 ))}
@@ -329,7 +409,7 @@ export default function WorkspaceDashboard() {
             <div className="w-full max-w-lg rounded-xl border border-[var(--border-paper-strong)] bg-white p-6 shadow-xl">
               <div className="flex items-center justify-between border-b border-[var(--border-paper)] pb-3 mb-4">
                 <h3 className="font-editorial text-lg font-bold text-[var(--ink-primary)]">
-                  Create New Research Project
+                  Create New Project Folder
                 </h3>
                 <button
                   onClick={() => setShowNewProjectModal(false)}
@@ -341,41 +421,41 @@ export default function WorkspaceDashboard() {
 
               <form onSubmit={handleCreateProject} className="space-y-4">
                 <div>
-                  <label className="block font-mono-provenance text-xs font-medium text-[var(--ink-primary)] mb-1">
-                    Project Title *
+                  <label className="block font-mono-provenance text-xs font-bold text-[var(--ink-primary)] mb-1">
+                    Project Name *
                   </label>
                   <input
                     type="text"
                     required
                     value={newTitle}
                     onChange={(e) => setNewTitle(e.target.value)}
-                    placeholder="e.g. Cognitive Load in Dual-Task Academic Reading"
+                    placeholder="e.g. Climate Change & Renewable Energy Essay"
                     className="w-full rounded border border-[var(--border-paper)] px-3 py-2 text-xs focus:border-[var(--accent-sage)] focus:outline-none"
                   />
                 </div>
 
                 <div>
-                  <label className="block font-mono-provenance text-xs font-medium text-[var(--ink-primary)] mb-1">
-                    Research Question (Scope)
+                  <label className="block font-mono-provenance text-xs font-bold text-[var(--ink-primary)] mb-1">
+                    Main Question You Want to Answer
                   </label>
                   <textarea
                     rows={2}
                     value={newQuestion}
                     onChange={(e) => setNewQuestion(e.target.value)}
-                    placeholder="e.g. What are the key empirical contradictions between..."
+                    placeholder="e.g. How do solar panels and wind turbines compare in cost and reliability?"
                     className="w-full rounded border border-[var(--border-paper)] px-3 py-2 text-xs focus:border-[var(--accent-sage)] focus:outline-none"
                   />
                 </div>
 
                 <div>
-                  <label className="block font-mono-provenance text-xs font-medium text-[var(--ink-primary)] mb-1">
-                    Description or Methodology Notes
+                  <label className="block font-mono-provenance text-xs font-bold text-[var(--ink-primary)] mb-1">
+                    Short Description (Optional)
                   </label>
                   <textarea
                     rows={2}
                     value={newDescription}
                     onChange={(e) => setNewDescription(e.target.value)}
-                    placeholder="e.g. Systematic literature review across 2020-2026 proceedings."
+                    placeholder="e.g. Collecting papers and notes for my class project."
                     className="w-full rounded border border-[var(--border-paper)] px-3 py-2 text-xs focus:border-[var(--accent-sage)] focus:outline-none"
                   />
                 </div>
@@ -404,3 +484,4 @@ export default function WorkspaceDashboard() {
     </div>
   );
 }
+
