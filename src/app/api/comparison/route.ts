@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { store } from "@/lib/data/store";
 import { ComparisonMatrix, PaperComparisonRow, AcademicPaper, DocumentChunk } from "@/types";
 
+import { cleanChunkForDisplay } from "@/lib/ai/gemini";
+
 function buildComparisonMatrix(
   projectId: string,
   papers: AcademicPaper[],
@@ -10,18 +12,22 @@ function buildComparisonMatrix(
   const dimensions = ["objective", "methodology", "dataset", "key_findings", "limitations"];
 
   const rows: PaperComparisonRow[] = papers.map((paper) => {
-    const paperChunks = chunks.filter((c) => c.document_id === paper.id);
+    const paperChunks = chunks.filter((c) => c.document_id === paper.id && !/\.{5,}/.test(c.content));
 
     const findRelevantExcerpt = (keywords: string[], fallbackIndex = 0): string => {
       for (const chk of paperChunks) {
         const lower = chk.content.toLowerCase();
         if (keywords.some((k) => lower.includes(k))) {
-          return chk.content.slice(0, 260).trim() + (chk.content.length > 260 ? "..." : "");
+          const cleaned = cleanChunkForDisplay(chk.content);
+          if (cleaned.length > 30) {
+            return cleaned.slice(0, 240).trim() + (cleaned.length > 240 ? "..." : "");
+          }
         }
       }
       if (paperChunks.length > 0) {
         const chosen = paperChunks[Math.min(fallbackIndex, paperChunks.length - 1)];
-        return chosen.content.slice(0, 220).trim() + (chosen.content.length > 220 ? "..." : "");
+        const cleaned = cleanChunkForDisplay(chosen.content);
+        return cleaned.slice(0, 220).trim() + (cleaned.length > 220 ? "..." : "");
       }
       return "Not mentioned in this paper";
     };
@@ -33,37 +39,52 @@ function buildComparisonMatrix(
       year: paper.publication_year,
       values: {
         objective: {
-          text: findRelevantExcerpt(["propose", "aim", "objective", "explore", "investigate", "framework", "study", "goal"], 0),
+          text: findRelevantExcerpt(
+            ["propose", "aim", "objective", "explore", "investigate", "framework", "study", "goal", "tujuan pembelajaran", "kompetensi dasar", "pendahuluan"],
+            1
+          ),
           status: "reported",
           citations: [
             {
               id: `cit_comp_${paper.id}_obj`,
               document_id: paper.id,
               document_title: paper.title,
-              page_number: 1,
-              passage_quote: paperChunks[0]?.content.slice(0, 100) || paper.title,
+              page_number: paperChunks[0]?.page_number || 1,
+              passage_quote: cleanChunkForDisplay(paperChunks[0]?.content || paper.title).slice(0, 120),
               confidence: 0.95,
               verified: true,
             },
           ],
         },
         methodology: {
-          text: findRelevantExcerpt(["architecture", "model", "network", "transformer", "experiment", "training", "evaluation", "design", "method"], 1),
+          text: findRelevantExcerpt(
+            ["architecture", "model", "network", "transformer", "experiment", "training", "evaluation", "design", "method", "uraian materi", "rumus", "persamaan", "percobaan", "metode"],
+            2
+          ),
           status: "reported",
           citations: [],
         },
         dataset: {
-          text: findRelevantExcerpt(["dataset", "corpus", "wikipedia", "translation", "benchmark", "wmt", "cohort", "sample", "data"], 1),
+          text: findRelevantExcerpt(
+            ["dataset", "corpus", "wikipedia", "translation", "benchmark", "wmt", "cohort", "sample", "data", "contoh soal", "rangkaian", "komponen", "alat"],
+            3
+          ),
           status: "reported",
           citations: [],
         },
         key_findings: {
-          text: findRelevantExcerpt(["results", "superior", "state-of-the-art", "generate", "outperform", "finding", "accuracy", "demonstrate", "show"], 2),
+          text: findRelevantExcerpt(
+            ["results", "superior", "state-of-the-art", "generate", "outperform", "finding", "accuracy", "demonstrate", "show", "rangkuman", "hukum ohm", "hukum kirchoff", "kesimpulan"],
+            Math.min(4, Math.max(0, paperChunks.length - 2))
+          ),
           status: "reported",
           citations: [],
         },
         limitations: {
-          text: findRelevantExcerpt(["limitation", "challenge", "fall short", "memory constraints", "hallucination", "boundary", "constraint", "problem", "weakness"], paperChunks.length - 1),
+          text: findRelevantExcerpt(
+            ["limitation", "challenge", "fall short", "memory constraints", "hallucination", "boundary", "constraint", "problem", "weakness", "penugasan mandiri", "evaluasi", "kesulitan"],
+            Math.max(0, paperChunks.length - 1)
+          ),
           status: "reported",
           citations: [],
         },

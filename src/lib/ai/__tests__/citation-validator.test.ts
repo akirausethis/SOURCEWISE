@@ -97,4 +97,74 @@ describe("Strict Citation Validator", () => {
     expect(result.rejectedCitations.length).toBe(1);
     expect(result.rejectedCitations[0].reason).toContain("not found in authorized collection");
   });
+
+  it("synthesizes uploaded Physics PDF topics cleanly without raw ** stars or unrelated RAG/LLM chunks", async () => {
+    const { queryResearchAssistant } = await import("../gemini");
+    const physicsPaper = {
+      id: "paper_fisika_1",
+      project_id: "proj_custom_1",
+      user_id: "usr_1",
+      title: "Modul Fisika Kelas XII KD 3.1",
+      authors: ["ISSI ANISSA"],
+      publication_year: 2020,
+      journal_or_venue: "Direktorat SMA",
+      doi: null,
+      file_path: "/uploads/fisika.pdf",
+      file_size_bytes: 1352472,
+      file_hash: "hash_1",
+      page_count: 38,
+      processing_status: "ready" as const,
+      error_message: null,
+      created_at: "2026-10-17T00:00:00Z",
+      updated_at: "2026-10-17T00:00:00Z",
+    };
+
+    const physicsPages: DocumentPage[] = [
+      {
+        id: "pg_6",
+        document_id: "paper_fisika_1",
+        page_number: 6,
+        char_count: 450,
+        text_content:
+          "Modul Fisika Kelas XII KD 3.1\n@2020, Direktorat SMA\nPENDAHULUAN\nJudul Modul : Listrik Arus Searah (DC)\nPada modul listrik arus searah ini, Anda akan belajar tentang prinsip kerja peralatan listrik searah, diawali dari konsep besaran-besaran listrik meliputi kuat arus listrik, beda potensial, dan hambatan listrik. Anda juga akan belajar tentang Hukum Ohm dan Hukum Kirchoff serta rangkaian seri dan paralel.",
+        created_at: "2026-10-17T00:00:00Z",
+      },
+      {
+        id: "pg_24",
+        document_id: "paper_fisika_1",
+        page_number: 24,
+        char_count: 350,
+        text_content:
+          "Modul Fisika Kelas XII KD 3.1\n@2020, Direktorat SMA\n2. Energi dan Daya Listrik\nEnergi listrik adalah energi yang mampu menggerakkan muatan-muatan listrik pada suatu beda potensial tertentu. Daya listrik merupakan laju aliran energi setiap satuan waktu.",
+        created_at: "2026-10-17T00:00:00Z",
+      },
+    ];
+
+    const physicsChunks: DocumentChunk[] = physicsPages.map((pg, idx) => ({
+      id: `chk_fis_${idx}`,
+      document_id: "paper_fisika_1",
+      page_number: pg.page_number,
+      chunk_index: idx,
+      content: pg.text_content,
+      token_count: 80,
+      created_at: "2026-10-17T00:00:00Z",
+    }));
+
+    const res = await queryResearchAssistant({
+      question: "What are the main thing that are thought in this pdf?",
+      projectId: "proj_custom_1",
+      papers: [physicsPaper],
+      chunks: physicsChunks,
+      pages: physicsPages,
+      selectedPaperId: "paper_fisika_1",
+    });
+
+    expect(res.content).toContain("Modul Fisika Kelas XII KD 3.1");
+    expect(res.content).toContain("Ohm");
+    expect(res.content).toContain("Kirchhoff");
+    expect(res.content).not.toContain("**");
+    expect(res.content).not.toContain("Transformer");
+    expect(res.thinking).toContain("Understanding Your Question");
+    expect(res.citations.length).toBeGreaterThan(0);
+  });
 });

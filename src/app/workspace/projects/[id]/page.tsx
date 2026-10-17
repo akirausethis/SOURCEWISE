@@ -430,6 +430,15 @@ export default function ProjectWorkspacePage({
     const userStoredKey =
       typeof window !== "undefined" ? localStorage.getItem("sourcewise_gemini_key") : null;
 
+    // Guarantee the currently open paper and all its loaded pages are included in the request payload
+    const payloadPapers = selectedPaper
+      ? [selectedPaper, ...customPapers.filter((p) => p.id !== selectedPaper.id)]
+      : customPapers;
+    const payloadPages =
+      pages.length > 0
+        ? [...pages, ...customPages.filter((pg) => !pages.some((ap) => ap.id === pg.id))]
+        : customPages;
+
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
@@ -440,8 +449,8 @@ export default function ProjectWorkspacePage({
           conversationId: `conv_${projectId}`,
           selectedPaperId: selectedPaper?.id,
           apiKey: userStoredKey || undefined,
-          customPapers,
-          customPages,
+          customPapers: payloadPapers,
+          customPages: payloadPages,
           customChunks,
         }),
       });
@@ -459,6 +468,110 @@ export default function ProjectWorkspacePage({
     } finally {
       setChatLoading(false);
     }
+  };
+
+  // Formats AI answer text cleanly: strips raw ***/** stars, formats numbered items and section headers, and makes [1] badges clickable
+  const renderPrettyAnswerContent = (rawText: string, citations?: Citation[]) => {
+    const cleanText = (rawText || "")
+      .replace(/\*{2,3}([^*]+)\*{2,3}/g, "$1")
+      .replace(/^#{1,6}\s+/gm, "")
+      .trim();
+
+    const renderInlineWithCitations = (lineText: string) => {
+      const parts = lineText.split(/(\[\d+\])/g);
+      return parts.map((part, idx) => {
+        const match = part.match(/^\[(\d+)\]$/);
+        if (match && citations && citations.length > 0) {
+          const citIdx = parseInt(match[1], 10) - 1;
+          const targetCit = citations[citIdx];
+          if (targetCit) {
+            return (
+              <button
+                key={idx}
+                type="button"
+                onClick={() => handleCitationClick(targetCit)}
+                className="inline-flex items-center gap-0.5 mx-0.5 rounded bg-amber-100 border border-amber-300 px-1.5 py-0.2 font-mono-provenance text-[10px] font-bold text-amber-900 hover:bg-amber-200 transition cursor-pointer"
+                title={`Jump to Page ${targetCit.page_number}`}
+              >
+                [{match[1]} • p.{targetCit.page_number}]
+              </button>
+            );
+          }
+        }
+        return <span key={idx}>{part}</span>;
+      });
+    };
+
+    const blocks = cleanText.split(/\n\s*\n/).filter((b) => b.trim().length > 0);
+
+    return (
+      <div className="space-y-3 text-xs leading-relaxed text-[var(--ink-primary)]">
+        {blocks.map((block, bIdx) => {
+          const lines = block.split(/\n/).map((l) => l.trim()).filter(Boolean);
+
+          // Check if block is a "Key Evidence #X (Page Y):" block
+          if (lines.length >= 2 && /^Key Evidence #\d+/i.test(lines[0])) {
+            return (
+              <div
+                key={bIdx}
+                className="rounded-lg border border-[var(--border-paper-strong)] bg-[var(--surface-paper)] p-3 space-y-1"
+              >
+                <div className="font-mono-provenance text-[10px] font-bold uppercase text-[var(--accent-sage-dark)]">
+                  {lines[0]}
+                </div>
+                <div className="text-[var(--ink-secondary)]">
+                  {renderInlineWithCitations(lines.slice(1).join(" "))}
+                </div>
+              </div>
+            );
+          }
+
+          return (
+            <div key={bIdx} className="space-y-1.5">
+              {lines.map((line, lIdx) => {
+                const isSectionHeader =
+                  /^(Core Topics Covered|Page-by-Page Breakdown|Main Ideas|Summary):$/i.test(line) ||
+                  (line.endsWith(":") && line.length < 60 && lIdx === 0);
+                const numberedMatch = line.match(/^(\d+)\.\s+(.*)$/);
+
+                if (isSectionHeader) {
+                  return (
+                    <div
+                      key={lIdx}
+                      className="font-editorial text-xs font-bold text-[var(--ink-primary)] pt-1 border-b border-[var(--border-paper)] pb-1"
+                    >
+                      {line}
+                    </div>
+                  );
+                }
+
+                if (numberedMatch) {
+                  return (
+                    <div
+                      key={lIdx}
+                      className="flex items-start gap-2 rounded-lg bg-[var(--surface-subtle)] px-2.5 py-1.5 border border-[var(--border-paper)]"
+                    >
+                      <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[var(--accent-sage-dark)] text-[10px] font-bold text-white font-mono-provenance mt-0.5">
+                        {numberedMatch[1]}
+                      </span>
+                      <span className="flex-1 text-[var(--ink-primary)] font-medium">
+                        {renderInlineWithCitations(numberedMatch[2])}
+                      </span>
+                    </div>
+                  );
+                }
+
+                return (
+                  <p key={lIdx} className="text-[var(--ink-primary)]">
+                    {renderInlineWithCitations(line)}
+                  </p>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+    );
   };
 
   // Upload Paper Submission (.pdf, .txt, .md, .tex)
@@ -1064,20 +1177,19 @@ export default function ProjectWorkspacePage({
                         </span>
                       </div>
 
-                      <div className="whitespace-pre-wrap leading-relaxed text-[var(--ink-primary)] font-sans-ui">
-                        {msg.content}
-                      </div>
-
-                      {/* Explicit AI Reasoning / Thinking Steps */}
+                      {/* Explicit AI Reasoning / Thinking Steps (Shown FIRST and open so user sees AI thinking) */}
                       {msg.thinking && (
-                        <details className="mt-2 text-xs border border-[var(--border-paper)] bg-[var(--surface-subtle)] rounded-lg p-2.5 group">
-                          <summary className="cursor-pointer font-mono-provenance text-[10px] font-bold uppercase tracking-wider text-[var(--ink-secondary)] hover:text-[var(--accent-sage-dark)] flex items-center justify-between list-none">
+                        <details
+                          open
+                          className="text-xs border border-[var(--accent-sage-border)] bg-[var(--accent-sage-light)]/40 rounded-lg p-2.5 group"
+                        >
+                          <summary className="cursor-pointer font-mono-provenance text-[10px] font-bold uppercase tracking-wider text-[var(--accent-sage-dark)] flex items-center justify-between list-none">
                             <span className="flex items-center gap-1.5">
                               <span className="h-2 w-2 rounded-full bg-[var(--accent-sage)] inline-block"></span>
-                              🧠 How the AI Thought About This (Click to see steps ↓)
+                              🧠 AI Thinking Process (How I Analyzed Your Document)
                             </span>
                             <span className="text-[10px] font-mono-provenance text-[var(--ink-muted)]">
-                              {msg.modelUsed || "Smart Reader"}
+                              {msg.modelUsed || "Smart Study Engine"}
                             </span>
                           </summary>
                           <div className="mt-2 pt-2 border-t border-[var(--border-paper)] font-mono-provenance text-[11px] leading-relaxed text-[var(--ink-secondary)] whitespace-pre-wrap bg-white p-2.5 rounded border border-[var(--border-paper)]">
@@ -1085,6 +1197,17 @@ export default function ProjectWorkspacePage({
                           </div>
                         </details>
                       )}
+
+                      {/* Clean, Pretty Formatted Answer Content (No raw ** or *** stars) */}
+                      <div className="font-sans-ui">
+                        {msg.sender === "user" ? (
+                          <div className="whitespace-pre-wrap leading-relaxed text-[var(--ink-primary)] font-medium">
+                            {msg.content}
+                          </div>
+                        ) : (
+                          renderPrettyAnswerContent(msg.content, msg.citations)
+                        )}
+                      </div>
 
                       {/* Render Clickable Page Proof Citations */}
                       {msg.citations && msg.citations.length > 0 && (
@@ -1104,7 +1227,7 @@ export default function ProjectWorkspacePage({
                                 </span>
                                 <div className="flex-1 min-w-0">
                                   <div className="font-bold text-[var(--ink-primary)] truncate">
-                                    {cit.document_title || "Your Paper"} • Page {cit.page_number}
+                                    {cit.document_title || selectedPaper?.title || "Your Paper"} • Page {cit.page_number}
                                   </div>
                                   <div className="italic text-[var(--ink-secondary)] line-clamp-2 mt-0.5">
                                     “{cit.passage_quote}”
@@ -1138,9 +1261,16 @@ export default function ProjectWorkspacePage({
                   ))
                 )}
                 {chatLoading && (
-                  <div className="rounded-lg border border-[var(--border-paper)] bg-white p-3 text-xs text-[var(--ink-muted)] flex items-center gap-2">
-                    <Sparkles className="h-4 w-4 animate-spin text-[var(--accent-sage)]" />
-                    <span>Reading your papers &amp; finding exact page proof...</span>
+                  <div className="rounded-xl border-2 border-[var(--accent-sage-border)] bg-white p-3.5 text-xs space-y-2 shadow-2xs">
+                    <div className="flex items-center gap-2 font-mono-provenance font-bold text-[var(--accent-sage-dark)]">
+                      <Sparkles className="h-4 w-4 animate-spin text-[var(--accent-sage)]" />
+                      <span>🧠 AI is thinking &amp; scanning &ldquo;{selectedPaper?.title || "your document"}&rdquo;...</span>
+                    </div>
+                    <div className="pl-6 space-y-1 text-[11px] font-mono-provenance text-[var(--ink-secondary)]">
+                      <div>1. Reading all {pages.length || selectedPaper?.page_count || 1} pages of your selected document...</div>
+                      <div>2. Extracting core concepts, definitions, and formulas...</div>
+                      <div>3. Verifying exact page numbers &amp; quotes...</div>
+                    </div>
                   </div>
                 )}
               </div>

@@ -264,12 +264,18 @@ export const SEED_CHUNKS: DocumentChunk[] = [
   },
 ];
 
-// In-browser local storage wrapper with SSR safety
+// In-browser local storage + Server-side in-memory store for Next.js API routes & Vercel Serverless
 class LocalDataStore {
   private isBrowser = typeof window !== "undefined";
+  private serverMemory = new Map<string, unknown>();
 
   private get<T>(key: string, fallback: T): T {
-    if (!this.isBrowser) return fallback;
+    if (!this.isBrowser) {
+      if (this.serverMemory.has(key)) {
+        return this.serverMemory.get(key) as T;
+      }
+      return Array.isArray(fallback) ? ([...fallback] as unknown as T) : fallback;
+    }
     try {
       const data = localStorage.getItem(key);
       return data ? JSON.parse(data) : fallback;
@@ -279,7 +285,10 @@ class LocalDataStore {
   }
 
   private set<T>(key: string, value: T): void {
-    if (!this.isBrowser) return;
+    if (!this.isBrowser) {
+      this.serverMemory.set(key, value);
+      return;
+    }
     try {
       localStorage.setItem(key, JSON.stringify(value));
     } catch (err) {
@@ -300,8 +309,8 @@ class LocalDataStore {
   getProjects(): ResearchProject[] {
     const list = this.get<ResearchProject[]>(STORAGE_KEYS.PROJECTS, []);
     if (list.length === 0) {
-      this.set(STORAGE_KEYS.PROJECTS, SEED_PROJECTS);
-      return SEED_PROJECTS;
+      this.set(STORAGE_KEYS.PROJECTS, [...SEED_PROJECTS]);
+      return [...SEED_PROJECTS];
     }
     return list;
   }
@@ -311,7 +320,7 @@ class LocalDataStore {
   }
 
   saveProject(project: ResearchProject): void {
-    const list = this.getProjects();
+    const list = [...this.getProjects()];
     const idx = list.findIndex((p) => p.id === project.id);
     if (idx >= 0) {
       list[idx] = { ...project, updated_at: new Date().toISOString() };
@@ -330,8 +339,8 @@ class LocalDataStore {
   getPapers(projectId?: string): AcademicPaper[] {
     const list = this.get<AcademicPaper[]>(STORAGE_KEYS.PAPERS, []);
     if (list.length === 0) {
-      this.set(STORAGE_KEYS.PAPERS, SEED_PAPERS);
-      return projectId ? SEED_PAPERS.filter((p) => p.project_id === projectId) : SEED_PAPERS;
+      this.set(STORAGE_KEYS.PAPERS, [...SEED_PAPERS]);
+      return projectId ? SEED_PAPERS.filter((p) => p.project_id === projectId) : [...SEED_PAPERS];
     }
     return projectId ? list.filter((p) => p.project_id === projectId) : list;
   }
@@ -341,7 +350,7 @@ class LocalDataStore {
   }
 
   savePaper(paper: AcademicPaper): void {
-    const list = this.getPapers();
+    const list = [...this.getPapers()];
     const idx = list.findIndex((p) => p.id === paper.id);
     if (idx >= 0) {
       list[idx] = { ...paper, updated_at: new Date().toISOString() };
@@ -377,7 +386,10 @@ class LocalDataStore {
 
   saveChunks(newChunks: DocumentChunk[]): void {
     const existing = this.get<DocumentChunk[]>(STORAGE_KEYS.CHUNKS, SEED_CHUNKS);
-    this.set(STORAGE_KEYS.CHUNKS, [...existing, ...newChunks]);
+    const filtered = existing.filter(
+      (c) => !newChunks.some((nc) => nc.id === c.id)
+    );
+    this.set(STORAGE_KEYS.CHUNKS, [...filtered, ...newChunks]);
   }
 
   // --- Notes ---

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { store } from "@/lib/data/store";
 import { queryResearchAssistant } from "@/lib/ai/gemini";
+import { chunkDocumentPages } from "@/lib/pdf/extractor";
 import { ChatMessage, AcademicPaper, DocumentPage, DocumentChunk } from "@/types";
 
 export async function POST(req: NextRequest) {
@@ -26,24 +27,83 @@ export async function POST(req: NextRequest) {
     const convId = conversationId || `conv_${pid}`;
 
     // Hydrate serverless store with any client-uploaded papers/pages/chunks (ensures 100% reliability on Vercel)
-    if (Array.isArray(customPapers)) {
-      for (const p of customPapers as AcademicPaper[]) {
-        if (p && p.id) store.savePaper(p);
+    const incomingPapers: AcademicPaper[] = Array.isArray(customPapers) ? customPapers : [];
+    const incomingPages: DocumentPage[] = Array.isArray(customPages) ? customPages : [];
+    const incomingChunks: DocumentChunk[] = Array.isArray(customChunks) ? customChunks : [];
+
+    for (const p of incomingPapers) {
+      if (p && p.id) store.savePaper(p);
+    }
+    if (incomingPages.length > 0) {
+      store.savePages(incomingPages);
+    }
+    if (incomingChunks.length > 0) {
+      store.saveChunks(incomingChunks);
+    }
+
+    // Merge incoming papers with store papers so nothing is ever lost across stateless calls
+    const paperMap = new Map<string, AcademicPaper>();
+    for (const p of [...incomingPapers, ...store.getPapers(pid), ...store.getPapers()]) {
+      if (p && p.id && !paperMap.has(p.id)) {
+        paperMap.set(p.id, p);
       }
     }
-    if (Array.isArray(customPages) && customPages.length > 0) {
-      store.savePages(customPages as DocumentPage[]);
+    const papers = Array.from(paperMap.values());
+
+    // Merge incoming pages with store pages
+    const pageMap = new Map<string, DocumentPage>();
+    for (const pg of [...incomingPages, ...papers.flatMap((p) => store.getPages(p.id))]) {
+      if (pg && pg.id && !pageMap.has(pg.id)) {
+        pageMap.set(pg.id, pg);
+      }
     }
-    if (Array.isArray(customChunks) && customChunks.length > 0) {
-      store.saveChunks(customChunks as DocumentChunk[]);
+    const pages = Array.from(pageMap.values());
+
+    // Merge incoming chunks with store chunks
+    const chunkMap = new Map<string, DocumentChunk>();
+    for (const chk of [...incomingChunks, ...store.getChunks()]) {
+      if (chk && chk.id && !chunkMap.has(chk.id)) {
+        chunkMap.set(chk.id, chk);
+      }
+    }
+    let allChunks = Array.from(chunkMap.values());
+
+    // Safety net: if the currently selected paper has pages in the reader but 0 chunks, chunk its pages on the fly!
+    if (selectedPaperId) {
+      const hasChunksForSelected = allChunks.some((c) => c.document_id === selectedPaperId);
+      if (!hasChunksForSelected) {
+        const selectedPages = pages.filter((p) => p.document_id === selectedPaperId);
+        if (selectedPages.length > 0) {
+          const generatedChunks = chunkDocumentPages(
+            selectedPaperId,
+            selectedPages.map((p) => ({ page_number: p.page_number, text: p.text_content }))
+          );
+          store.saveChunks(generatedChunks);
+          allChunks = [...generatedChunks, ...allChunks];
+        }
+      }
     }
 
-    const papers = store.getPapers(pid);
-    const paperIds = new Set(papers.map((p) => p.id));
-    const allChunks = store.getChunks();
-    const projectChunks = allChunks.filter((c) => paperIds.has(c.document_id));
+    // If the user has a specific paper selected in the Reader (e.g. their uploaded Physics PDF),
+    // and they aren't asking to compare across all papers, scope to that paper's chunks first!
+    const isMultiPaperQuery = /\b(compare|comparison|both|all papers|across papers|difference between|bandingkan)\b/i.test(
+      question
+    );
+    const selectedPaperChunks = selectedPaperId
+      ? allChunks.filter((c) => c.document_id === selectedPaperId)
+      : [];
 
-    const pages = papers.flatMap((p) => store.getPages(p.id));
+    const projectPaperIds = new Set(
+      papers.filter((p) => p.project_id === pid || incomingPapers.some((ip) => ip.id === p.id)).map((p) => p.id)
+    );
+    const projectChunks = allChunks.filter((c) => projectPaperIds.has(c.document_id));
+
+    const effectiveChunks =
+      selectedPaperChunks.length > 0 && !isMultiPaperQuery
+        ? selectedPaperChunks
+        : projectChunks.length > 0
+          ? projectChunks
+          : allChunks;
 
     // Save user message
     const userMsg: ChatMessage = {
@@ -60,7 +120,7 @@ export async function POST(req: NextRequest) {
       question: question.trim(),
       projectId: pid,
       papers,
-      chunks: projectChunks.length > 0 ? projectChunks : allChunks,
+      chunks: effectiveChunks,
       pages,
       selectedPaperId,
       userApiKey: apiKey || headerApiKey,
